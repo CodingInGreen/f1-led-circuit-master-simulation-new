@@ -108,7 +108,8 @@ impl PlotApp {
                     self.led_states.clear();
     
                     // Update the LED states for all known positions
-                    for (&_driver_number, &position) in &self.last_positions {
+                    for (&driver_number, &position) in &self.last_positions {
+                        let color = self.colors.get(&driver_number).copied().unwrap_or(egui::Color32::WHITE);
                         self.led_states.insert(position, color);
                     }
     
@@ -139,7 +140,7 @@ impl App for PlotApp {
         });
 
         let width = max_x - min_x;
-        let height = max_y;
+        let height = max_y - min_y;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -161,6 +162,28 @@ impl App for PlotApp {
                 }
                 if ui.button("STOP").clicked() {
                     self.reset();
+                }
+            });
+        });
+
+        egui::SidePanel::left("legend_panel").show(ctx, |ui| {
+            ui.vertical(|ui| {
+                let style = ui.style_mut();
+                style.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 8.0; // Set the font size to 8.0 (or any other size you prefer)
+                
+                for driver in &self.driver_info {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{}: {} ({})", driver.number, driver.name, driver.team));
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(5.0, 5.0),
+                            ),
+                            0.0,
+                            driver.color,
+                        );
+                        ui.add_space(5.0); // Space between legend items
+                    });
                 }
             });
         });
@@ -195,31 +218,10 @@ impl App for PlotApp {
             }
         });
 
-        egui::TopBottomPanel::top("legend_panel").show(ctx, |ui| {
-            ui.vertical(|ui| {
-                let style = ui.style_mut();
-                style.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 8.0; // Set the font size to 12.0 (or any other size you prefer)
-                
-                for driver in &self.driver_info {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{}: {} ({})", driver.number, driver.name, driver.team));
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                ui.cursor().min,
-                                egui::vec2(5.0, 5.0),
-                            ),
-                            0.0,
-                            driver.color,
-                        );
-                        ui.add_space(5.0); // Space between legend items
-                    });
-                }
-            });
-        });
-
         ctx.request_repaint(); // Request the GUI to repaint
     }
 }
+
 
 fn main() -> eframe::Result<()> {
     let coordinates = read_coordinates("led_coords.csv").expect("Error reading CSV");
