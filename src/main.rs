@@ -162,7 +162,7 @@ impl App for PlotApp {
             });
         });
 
-        egui::SidePanel::left("legend_panel").show(ctx, |ui| {
+        egui::SidePanel::right("legend_panel").show(ctx, |ui| {
             ui.vertical(|ui| {
                 let style = ui.style_mut();
                 style.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 8.0; // Set the font size to 8.0 (or any other size you prefer)
