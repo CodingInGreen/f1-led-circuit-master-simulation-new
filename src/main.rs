@@ -7,7 +7,7 @@ use eframe::{egui, App, Frame};
 use std::error::Error;
 use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
 struct LedCoordinate {
@@ -42,7 +42,6 @@ struct PlotApp {
     current_index: usize,
     next_update_time: DateTime<Utc>,
     led_states: HashMap<(i64, i64), egui::Color32>,  // Tracks the current state of the LEDs
-    active_leds: HashSet<(i64, i64)>,  // Tracks the currently active LEDs
     last_positions: HashMap<u32, (i64, i64)>,  // Last known positions of each driver
 }
 
@@ -59,7 +58,6 @@ impl PlotApp {
             current_index: 0,
             next_update_time: Utc::now(),
             led_states: HashMap::new(), // Initialize empty LED state tracking
-            active_leds: HashSet::new(), // Initialize empty set for active LEDs
             last_positions: HashMap::new(), // Initialize empty last positions hashmap
         };
         app.calculate_next_update_time(); // Calculate initial next_update_time
@@ -72,13 +70,12 @@ impl PlotApp {
         self.race_started = false;
         self.current_index = 0;
         self.led_states.clear(); // Reset LED states
-        self.active_leds.clear(); // Reset active LEDs
         self.last_positions.clear(); // Reset last positions
         self.calculate_next_update_time(); // Calculate next_update_time after reset
     }
 
     fn calculate_next_update_time(&mut self) {
-        if let Some(run_data) = self.run_race_data.get(self.current_index) {
+        if let Some(_run_data) = self.run_race_data.get(self.current_index) {
             let mut total_time_delta = 0;
             for data in self.run_race_data.iter().take(self.current_index + 1) {
                 total_time_delta += data.time_delta;
@@ -94,7 +91,7 @@ impl PlotApp {
             if current_time >= self.next_update_time {
                 if self.current_index < self.run_race_data.len() {
                     let run_data = &self.run_race_data[self.current_index];
-                    let color = self.colors.get(&run_data.driver_number).copied().unwrap_or(egui::Color32::WHITE);
+                    //let color = self.colors.get(&run_data.driver_number).copied().unwrap_or(egui::Color32::WHITE);
     
                     let coord_key = (
                         Self::scale_f64(run_data.x_led, 1_000_000),
@@ -157,7 +154,6 @@ impl App for PlotApp {
                     self.start_datetime = Utc::now();
                     self.current_index = 0;
                     self.led_states.clear(); // Clear LED states when race starts
-                    self.active_leds.clear(); // Clear active LEDs when race starts
                     self.calculate_next_update_time(); // Calculate next update time when race starts
                 }
                 if ui.button("STOP").clicked() {
