@@ -43,6 +43,7 @@ struct PlotApp {
     next_update_time: DateTime<Utc>,
     led_states: HashMap<(i64, i64), egui::Color32>,  // Tracks the current state of the LEDs
     last_positions: HashMap<u32, (i64, i64)>,  // Last known positions of each driver
+    speed: i32,
 }
 
 impl PlotApp {
@@ -59,6 +60,7 @@ impl PlotApp {
             next_update_time: Utc::now(),
             led_states: HashMap::new(), // Initialize empty LED state tracking
             last_positions: HashMap::new(), // Initialize empty last positions hashmap
+            speed: 1, 
         };
         app.calculate_next_update_time(); // Calculate initial next_update_time
         app
@@ -140,6 +142,7 @@ impl App for PlotApp {
         let height = max_y - min_y;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+
             ui.horizontal(|ui| {
                 ui.separator();
                 if let Some(run_data) = self.run_race_data.get(self.current_index) {
@@ -147,7 +150,7 @@ impl App for PlotApp {
                     ui.label(timestamp_str);
                 }
                 ui.separator();
-
+        
                 if ui.button("START").clicked() {
                     self.race_started = true;
                     self.start_time = Instant::now();
@@ -158,6 +161,16 @@ impl App for PlotApp {
                 }
                 if ui.button("STOP").clicked() {
                     self.reset();
+                }
+        
+                ui.label("PLAYBACK SPEED");
+                ui.add(
+                    egui::Slider::new(&mut self.speed, 1..=5)
+                        //.text("Speed")
+                );
+        
+                if ui.button("UPDATE SPEED").clicked() {
+                    // Handle the speed update logic here
                 }
             });
         });
@@ -184,35 +197,42 @@ impl App for PlotApp {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            for coord in &self.coordinates {
-                let norm_x = ((coord.x_led - min_x) / width) as f32 * ui.available_width();
-                let norm_y = ui.available_height() - (((coord.y_led - min_y) / height) as f32 * ui.available_height());
+        egui::CentralPanel::default()
 
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(norm_x, norm_y),
-                        egui::vec2(20.0, 20.0),
-                    ),
-                    egui::Rounding::same(0.0),
-                    egui::Color32::BLACK,
-                );
-            }
+    .show(ctx, |ui| {
+        let painter = ui.painter();
 
-            for ((x, y), color) in &self.led_states {
-                let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32 * ui.available_width();
-                let norm_y = ui.available_height() - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32 * ui.available_height());
+        for coord in &self.coordinates {
+            let norm_x = ((coord.x_led - min_x) / width) as f32 * ui.available_width();
+            let norm_y = ui.available_height() - (((coord.y_led - min_y) / height) as f32 * ui.available_height());
 
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(norm_x, norm_y),
-                        egui::vec2(20.0, 20.0),
-                    ),
-                    egui::Rounding::same(0.0),
-                    *color,
-                );
-            }
-        });
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(norm_x, norm_y),
+                    egui::vec2(20.0, 20.0),
+                ),
+                egui::Rounding::same(0.0),
+                egui::Color32::BLACK,
+            );
+        }
+
+        for ((x, y), color) in &self.led_states {
+            let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32 * ui.available_width();
+            let norm_y = ui.available_height() - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32 * ui.available_height());
+
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(norm_x, norm_y),
+                    egui::vec2(20.0, 20.0),
+                ),
+                egui::Rounding::same(0.0),
+                *color,
+            );
+        }
+    });
+
+
+
 
         ctx.request_repaint(); // Request the GUI to repaint
     }
