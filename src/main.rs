@@ -198,46 +198,47 @@ impl App for PlotApp {
         });
 
         egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(egui::style::Margin {
+                left: 30.0,
+                right: 30.0,
+                top: 30.0,
+                bottom: 30.0,
+            }))
+            .show(ctx, |ui| {
+                let painter = ui.painter();
 
-    .show(ctx, |ui| {
-        let painter = ui.painter();
+                for coord in &self.coordinates {
+                    let norm_x = ((coord.x_led - min_x) / width) as f32 * (ui.available_width() - 60.0); // Adjust for left/right margin
+                    let norm_y = (ui.available_height() - 60.0) - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0)); // Adjust for top/bottom margin
 
-        for coord in &self.coordinates {
-            let norm_x = ((coord.x_led - min_x) / width) as f32 * ui.available_width();
-            let norm_y = ui.available_height() - (((coord.y_led - min_y) / height) as f32 * ui.available_height());
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(norm_x + 30.0, norm_y + 30.0), // Adjust position to include margins
+                            egui::vec2(20.0, 20.0),
+                        ),
+                        egui::Rounding::same(0.0),
+                        egui::Color32::BLACK,
+                    );
+                }
 
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(norm_x, norm_y),
-                    egui::vec2(20.0, 20.0),
-                ),
-                egui::Rounding::same(0.0),
-                egui::Color32::BLACK,
-            );
-        }
+                for ((x, y), color) in &self.led_states {
+                    let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32 * (ui.available_width() - 60.0); // Adjust for left/right margin
+                    let norm_y = (ui.available_height() - 60.0) - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32 * (ui.available_height() - 60.0)); // Adjust for top/bottom margin
 
-        for ((x, y), color) in &self.led_states {
-            let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32 * ui.available_width();
-            let norm_y = ui.available_height() - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32 * ui.available_height());
-
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(norm_x, norm_y),
-                    egui::vec2(20.0, 20.0),
-                ),
-                egui::Rounding::same(0.0),
-                *color,
-            );
-        }
-    });
-
-
-
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(norm_x + 30.0, norm_y + 30.0), // Adjust position to include margins
+                            egui::vec2(20.0, 20.0),
+                        ),
+                        egui::Rounding::same(0.0),
+                        *color,
+                    );
+                }
+            });
 
         ctx.request_repaint(); // Request the GUI to repaint
     }
 }
-
 
 fn main() -> eframe::Result<()> {
     let coordinates = read_coordinates("led_coords.csv").expect("Error reading CSV");
@@ -319,3 +320,4 @@ fn read_race_data(file_path: &str) -> Result<Vec<RunRace>, Box<dyn Error>> {
     }
     Ok(run_race_data)
 }
+
