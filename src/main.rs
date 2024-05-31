@@ -1,26 +1,30 @@
-#![warn(clippy::all, rust_2018_idioms)]
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-
-use csv::ReaderBuilder;
-use serde::Deserialize;
-use eframe::{egui, App, Frame};
-use std::error::Error;
-use std::time::Instant;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde::de::{self, Deserializer};
+use std::error::Error as StdError;
+use std::result::Result;
+use std::sync::Arc;
+use std::sync::Mutex;
+use tokio;
 use chrono::{DateTime, Utc};
+use csv::ReaderBuilder;
+use eframe::{egui, App, Frame};
+use std::time::Instant;
 use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LocationData {
+    x: f64,
+    y: f64,
+    #[serde(deserialize_with = "deserialize_datetime")]
+    date: DateTime<Utc>,
+    driver_number: u32,
+}
 
 #[derive(Debug, Deserialize)]
 struct LedCoordinate {
     x_led: f64,
     y_led: f64,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawData {
-    date: DateTime<Utc>,
-    driver_number: u32,
-    x: f64,
-    y: f64,
 }
 
 #[derive(Debug)]
@@ -31,6 +35,7 @@ struct RunRace {
     y_led: f64,
 }
 
+#[derive(Debug)]
 struct DriverInfo {
     number: u32,
     name: &'static str,
@@ -224,10 +229,12 @@ impl App for PlotApp {
     }
 }
 
-fn main() -> eframe::Result<()> {
-    let coordinates = read_coordinates("led_coords.csv").expect("Error reading CSV");
+fn main() -> Result<(), Box<dyn StdError>> {
+    let coordinates = read_coordinates("led_coords.csv")?;
 
-    let raw_data = read_raw_data("master_track_data.csv").expect("Error reading CSV");
+    // Initialize the runtime for async execution
+    let runtime = tokio::runtime::Runtime::new()?;
+    let raw_data = runtime.block_on(fetch_data())?;
 
     let run_race_data = generate_run_race_data(&raw_data, &coordinates);
 
@@ -255,7 +262,6 @@ fn main() -> eframe::Result<()> {
     ];
 
     let mut colors = HashMap::new();
-
     colors.insert(1, egui::Color32::from_rgb(30, 65, 255));  // Max Verstappen, Red Bull
     colors.insert(2, egui::Color32::from_rgb(0, 82, 255));   // Logan Sargeant, Williams
     colors.insert(4, egui::Color32::from_rgb(255, 135, 0));  // Lando Norris, McLaren
@@ -284,10 +290,37 @@ fn main() -> eframe::Result<()> {
         "F1-LED-CIRCUIT SIMULATION",
         native_options,
         Box::new(|_cc| Box::new(app)),
-    )
+    )?;
+
+    Ok(())
 }
 
-fn read_coordinates(file_path: &str) -> Result<Vec<LedCoordinate>, Box<dyn Error>> {
+async fn fetch_data() -> Result<Vec<LocationData>, Box<dyn StdError>> {
+    let session_key = "9149";
+    let driver_numbers = vec![
+        1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81
+    ];
+
+    let client = Client::new();
+    let mut all_data: Vec<LocationData> = Vec::new();
+
+    for driver_number in driver_numbers {
+        let url = format!("https://api.openf1.org/v1/location?session_key={}&driver_number={}", session_key, driver_number);
+        let resp = client.get(&url).send().await?;
+        if resp.status().is_success() {
+            let data: Vec<LocationData> = resp.json().await?;
+            all_data.extend(data);
+        } else {
+            eprintln!("Failed to fetch data for driver {}: HTTP {}", driver_number, resp.status());
+        }
+    }
+
+    // Sort the data by the date field
+    all_data.sort_by_key(|d| d.date);
+    Ok(all_data)
+}
+
+fn read_coordinates(file_path: &str) -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
     let mut rdr = ReaderBuilder::new().from_path(file_path)?;
     let mut coordinates = Vec::new();
     for result in rdr.deserialize() {
@@ -297,18 +330,7 @@ fn read_coordinates(file_path: &str) -> Result<Vec<LedCoordinate>, Box<dyn Error
     Ok(coordinates)
 }
 
-fn read_raw_data(file_path: &str) -> Result<Vec<RawData>, Box<dyn Error>> {
-    let mut rdr = ReaderBuilder::new().from_path(file_path)?;
-    let mut raw_data = Vec::new();
-    for result in rdr.deserialize() {
-        let record: RawData = result?;
-        raw_data.push(record);
-    }
-    Ok(raw_data)
-}
-
-
-fn generate_run_race_data(raw_data: &[RawData], coordinates: &[LedCoordinate]) -> Vec<RunRace> {
+fn generate_run_race_data(raw_data: &[LocationData], coordinates: &[LedCoordinate]) -> Vec<RunRace> {
     raw_data.iter().map(|data| {
         let (nearest_coord, _distance) = coordinates.iter()
             .map(|coord| {
@@ -325,4 +347,14 @@ fn generate_run_race_data(raw_data: &[RawData], coordinates: &[LedCoordinate]) -
             y_led: nearest_coord.y_led,
         }
     }).collect()
+}
+
+fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    DateTime::parse_from_rfc3339(&s)
+        .map_err(de::Error::custom)
+        .map(|dt| dt.with_timezone(&Utc))
 }
