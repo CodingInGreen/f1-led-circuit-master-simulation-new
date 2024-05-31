@@ -35,88 +35,80 @@ struct PlotApp {
     coordinates: Vec<LedCoordinate>,
     run_race_data: Vec<RunRace>,
     start_time: Instant,
-    start_datetime: DateTime<Utc>,
+    race_time: f64, // Elapsed race time in seconds
     race_started: bool,
     colors: HashMap<u32, egui::Color32>,
     driver_info: Vec<DriverInfo>,
     current_index: usize,
-    next_update_time: DateTime<Utc>,
     led_states: HashMap<(i64, i64), egui::Color32>,  // Tracks the current state of the LEDs
     last_positions: HashMap<u32, (i64, i64)>,  // Last known positions of each driver
-    speed: i32,
+    speed: i32, // Playback speed multiplier
 }
 
 impl PlotApp {
     fn new(coordinates: Vec<LedCoordinate>, run_race_data: Vec<RunRace>, colors: HashMap<u32, egui::Color32>, driver_info: Vec<DriverInfo>) -> Self {
-        let mut app = Self {
+        Self {
             coordinates,
             run_race_data,
             start_time: Instant::now(),
-            start_datetime: Utc::now(),
+            race_time: 0.0,
             race_started: false,
             colors,
             driver_info,
             current_index: 0,
-            next_update_time: Utc::now(),
             led_states: HashMap::new(), // Initialize empty LED state tracking
             last_positions: HashMap::new(), // Initialize empty last positions hashmap
-            speed: 1, 
-        };
-        app.calculate_next_update_time(); // Calculate initial next_update_time
-        app
+            speed: 1,
+        }
     }
 
     fn reset(&mut self) {
         self.start_time = Instant::now();
-        self.start_datetime = Utc::now();
+        self.race_time = 0.0;
         self.race_started = false;
         self.current_index = 0;
         self.led_states.clear(); // Reset LED states
         self.last_positions.clear(); // Reset last positions
-        self.calculate_next_update_time(); // Calculate next_update_time after reset
-    }
-
-    fn calculate_next_update_time(&mut self) {
-        if let Some(_run_data) = self.run_race_data.get(self.current_index) {
-            let mut total_time_delta = 0;
-            for data in self.run_race_data.iter().take(self.current_index + 1) {
-                total_time_delta += data.time_delta;
-            }
-            self.next_update_time = self.start_datetime + Duration::from_millis(total_time_delta);
-        }
     }
 
     fn update_race(&mut self) {
         if self.race_started {
-            let current_time = Utc::now();
-    
-            if current_time >= self.next_update_time {
-                if self.current_index < self.run_race_data.len() {
-                    let run_data = &self.run_race_data[self.current_index];
-                    //let color = self.colors.get(&run_data.driver_number).copied().unwrap_or(egui::Color32::WHITE);
-    
-                    let coord_key = (
-                        Self::scale_f64(run_data.x_led, 1_000_000),
-                        Self::scale_f64(run_data.y_led, 1_000_000),
-                    );
-    
-                    // Update the last known position of the driver
-                    self.last_positions.insert(run_data.driver_number, coord_key);
-    
-                    // Clear LED state
-                    self.led_states.clear();
-    
-                    // Update the LED states for all known positions
-                    for (&driver_number, &position) in &self.last_positions {
-                        let color = self.colors.get(&driver_number).copied().unwrap_or(egui::Color32::WHITE);
-                        self.led_states.insert(position, color);
-                    }
-    
-                    // Calculate next update time for the next data point
-                    self.current_index += 1;
-                    self.calculate_next_update_time();
+            let elapsed = self.start_time.elapsed().as_secs_f64();
+            self.race_time = elapsed * self.speed as f64;
+
+            let mut next_index = self.current_index;
+            while next_index < self.run_race_data.len() {
+                let run_data = &self.run_race_data[next_index];
+                let race_data_time = (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
+                if race_data_time <= self.race_time {
+                    next_index += 1;
+                } else {
+                    break;
                 }
             }
+
+            self.current_index = next_index;
+            self.update_led_states();
+        }
+    }
+
+    fn update_led_states(&mut self) {
+        self.led_states.clear();
+
+        for run_data in &self.run_race_data[..self.current_index] {
+            let coord_key = (
+                Self::scale_f64(run_data.x_led, 1_000_000),
+                Self::scale_f64(run_data.y_led, 1_000_000),
+            );
+
+            // Update the last known position of the driver
+            self.last_positions.insert(run_data.driver_number, coord_key);
+        }
+
+        // Update the LED states for all known positions
+        for (&driver_number, &position) in &self.last_positions {
+            let color = self.colors.get(&driver_number).copied().unwrap_or(egui::Color32::WHITE);
+            self.led_states.insert(position, color);
         }
     }
 
@@ -142,36 +134,24 @@ impl App for PlotApp {
         let height = max_y - min_y;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-
             ui.horizontal(|ui| {
                 ui.separator();
-                if let Some(run_data) = self.run_race_data.get(self.current_index) {
-                    let timestamp_str = run_data.date.format("%H:%M:%S%.3f").to_string();
-                    ui.label(timestamp_str);
-                }
+                ui.label(format!("Race Time: {:.2} s", self.race_time));
                 ui.separator();
-        
+
                 if ui.button("START").clicked() {
                     self.race_started = true;
                     self.start_time = Instant::now();
-                    self.start_datetime = Utc::now();
                     self.current_index = 0;
                     self.led_states.clear(); // Clear LED states when race starts
-                    self.calculate_next_update_time(); // Calculate next update time when race starts
                 }
                 if ui.button("STOP").clicked() {
                     self.reset();
                 }
-        
+
                 ui.label("PLAYBACK SPEED");
-                ui.add(
-                    egui::Slider::new(&mut self.speed, 1..=5)
-                        //.text("Speed")
-                );
-        
-                if ui.button("UPDATE SPEED").clicked() {
-                    // Handle the speed update logic here
-                }
+                ui.add(egui::Slider::new(&mut self.speed, 1..=5));
+
             });
         });
 
@@ -179,7 +159,7 @@ impl App for PlotApp {
             ui.vertical(|ui| {
                 let style = ui.style_mut();
                 style.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 8.0; // Set the font size to 8.0 (or any other size you prefer)
-                
+
                 for driver in &self.driver_info {
                     ui.horizontal(|ui| {
                         ui.label(format!("{}: {} ({})", driver.number, driver.name, driver.team));
@@ -205,8 +185,6 @@ impl App for PlotApp {
                 bottom: 30.0,
             }))
             .show(ctx, |ui| {
-                let painter = ui.painter();
-
                 for coord in &self.coordinates {
                     let norm_x = ((coord.x_led - min_x) / width) as f32 * (ui.available_width() - 60.0); // Adjust for left/right margin
                     let norm_y = (ui.available_height() - 60.0) - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0)); // Adjust for top/bottom margin
