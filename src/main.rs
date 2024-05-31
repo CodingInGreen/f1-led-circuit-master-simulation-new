@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use serde::de::{self, Deserializer};
 use std::error::Error as StdError;
 use std::result::Result;
-use std::sync::Arc;
-use std::sync::Mutex;
 use tokio;
 use chrono::{DateTime, Utc};
 use csv::ReaderBuilder;
@@ -309,7 +307,7 @@ async fn fetch_data() -> Result<Vec<LocationData>, Box<dyn StdError>> {
         let resp = client.get(&url).send().await?;
         if resp.status().is_success() {
             let data: Vec<LocationData> = resp.json().await?;
-            all_data.extend(data);
+            all_data.extend(data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0));
         } else {
             eprintln!("Failed to fetch data for driver {}: HTTP {}", driver_number, resp.status());
         }
