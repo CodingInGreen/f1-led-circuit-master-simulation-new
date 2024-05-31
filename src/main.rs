@@ -182,12 +182,6 @@ impl App for PlotApp {
         });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(egui::style::Margin {
-                left: 30.0,
-                right: 30.0,
-                top: 30.0,
-                bottom: 30.0,
-            }))
             .show(ctx, |ui| {
                 for coord in &self.coordinates {
                     let norm_x = ((coord.x_led - min_x) / width) as f32 * (ui.available_width() - 60.0); // Adjust for left/right margin
