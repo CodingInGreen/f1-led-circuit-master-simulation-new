@@ -5,7 +5,7 @@ use csv::ReaderBuilder;
 use serde::Deserialize;
 use eframe::{egui, App, Frame};
 use std::error::Error;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
@@ -21,7 +21,6 @@ struct RunRace {
     driver_number: u32,
     x_led: f64,
     y_led: f64,
-    time_delta: u64,
 }
 
 struct DriverInfo {
@@ -136,7 +135,12 @@ impl App for PlotApp {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.separator();
-                ui.label(format!("Race Time: {:.2} s", self.race_time));
+                ui.label(format!(
+                    "Race Time: {:02}:{:02}:{:05.2}",
+                    (self.race_time / 3600.0).floor() as u32, // hours
+                    ((self.race_time % 3600.0) / 60.0).floor() as u32, // minutes
+                    self.race_time % 60.0 // seconds with milliseconds
+                ));
                 ui.separator();
 
                 if ui.button("START").clicked() {
