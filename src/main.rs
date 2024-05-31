@@ -16,6 +16,14 @@ struct LedCoordinate {
 }
 
 #[derive(Debug, Deserialize)]
+struct RawData {
+    date: DateTime<Utc>,
+    driver_number: u32,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug)]
 struct RunRace {
     date: DateTime<Utc>,
     driver_number: u32,
@@ -219,7 +227,9 @@ impl App for PlotApp {
 fn main() -> eframe::Result<()> {
     let coordinates = read_coordinates("led_coords.csv").expect("Error reading CSV");
 
-    let run_race_data = read_race_data("master_track_data_with_time_deltas.csv").expect("Error reading CSV");
+    let raw_data = read_raw_data("master_track_data.csv").expect("Error reading CSV");
+
+    let run_race_data = generate_run_race_data(&raw_data, &coordinates);
 
     let driver_info = vec![
         DriverInfo { number: 1, name: "Max Verstappen", team: "Red Bull", color: egui::Color32::from_rgb(30, 65, 255) },
@@ -287,13 +297,32 @@ fn read_coordinates(file_path: &str) -> Result<Vec<LedCoordinate>, Box<dyn Error
     Ok(coordinates)
 }
 
-fn read_race_data(file_path: &str) -> Result<Vec<RunRace>, Box<dyn Error>> {
+fn read_raw_data(file_path: &str) -> Result<Vec<RawData>, Box<dyn Error>> {
     let mut rdr = ReaderBuilder::new().from_path(file_path)?;
-    let mut run_race_data = Vec::new();
+    let mut raw_data = Vec::new();
     for result in rdr.deserialize() {
-        let record: RunRace = result?;
-        run_race_data.push(record);
+        let record: RawData = result?;
+        raw_data.push(record);
     }
-    Ok(run_race_data)
+    Ok(raw_data)
 }
 
+
+fn generate_run_race_data(raw_data: &[RawData], coordinates: &[LedCoordinate]) -> Vec<RunRace> {
+    raw_data.iter().map(|data| {
+        let (nearest_coord, _distance) = coordinates.iter()
+            .map(|coord| {
+                let distance = ((data.x - coord.x_led).powi(2) + (data.y - coord.y_led).powi(2)).sqrt();
+                (coord, distance)
+            })
+            .min_by(|(_, dist_a), (_, dist_b)| dist_a.partial_cmp(dist_b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap();
+
+        RunRace {
+            date: data.date,
+            driver_number: data.driver_number,
+            x_led: nearest_coord.x_led,
+            y_led: nearest_coord.y_led,
+        }
+    }).collect()
+}
