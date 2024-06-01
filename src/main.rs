@@ -46,7 +46,6 @@ struct PlotApp {
     start_time: Instant,
     race_time: f64, // Elapsed race time in seconds
     race_started: bool,
-    colors: HashMap<u32, egui::Color32>,
     driver_info: Vec<DriverInfo>,
     current_index: usize,
     led_states: HashMap<(i64, i64), egui::Color32>, // Tracks the current state of the LEDs
@@ -58,16 +57,14 @@ impl PlotApp {
     fn new(
         coordinates: Vec<LedCoordinate>,
         run_race_data: Vec<RunRace>,
-        colors: HashMap<u32, egui::Color32>,
         driver_info: Vec<DriverInfo>,
-    ) -> Self {
-        Self {
+    ) -> PlotApp {
+        PlotApp {
             coordinates,
             run_race_data,
             start_time: Instant::now(),
             race_time: 0.0,
             race_started: false,
-            colors,
             driver_info,
             current_index: 0,
             led_states: HashMap::new(), // Initialize empty LED state tracking
@@ -124,10 +121,10 @@ impl PlotApp {
         // Update the LED states for all known positions
         for (&driver_number, &position) in &self.last_positions {
             let color = self
-                .colors
-                .get(&driver_number)
-                .copied()
-                .unwrap_or(egui::Color32::WHITE);
+                .driver_info
+                .iter()
+                .find(|&driver| driver.number == driver_number)
+                .map_or(egui::Color32::WHITE, |driver| driver.color);
             self.led_states.insert(position, color);
         }
     }
@@ -143,7 +140,7 @@ impl App for PlotApp {
 
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
-            egui::Id::new("my_layer"),
+            egui::Id::new("layer"),
         ));
 
         let (min_x, max_x) = self
@@ -384,29 +381,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
         },
     ];
 
-    let mut colors = HashMap::new();
-    colors.insert(1, egui::Color32::from_rgb(30, 65, 255)); // Max Verstappen, Red Bull
-    colors.insert(2, egui::Color32::from_rgb(0, 82, 255)); // Logan Sargeant, Williams
-    colors.insert(4, egui::Color32::from_rgb(255, 135, 0)); // Lando Norris, McLaren
-    colors.insert(10, egui::Color32::from_rgb(2, 144, 240)); // Pierre Gasly, Alpine
-    colors.insert(11, egui::Color32::from_rgb(30, 65, 255)); // Sergio Perez, Red Bull
-    colors.insert(14, egui::Color32::from_rgb(0, 110, 120)); // Fernando Alonso, Aston Martin
-    colors.insert(16, egui::Color32::from_rgb(220, 0, 0)); // Charles Leclerc, Ferrari
-    colors.insert(18, egui::Color32::from_rgb(0, 110, 120)); // Lance Stroll, Aston Martin
-    colors.insert(20, egui::Color32::from_rgb(160, 207, 205)); // Kevin Magnussen, Haas
-    colors.insert(22, egui::Color32::from_rgb(60, 130, 200)); // Yuki Tsunoda, AlphaTauri
-    colors.insert(23, egui::Color32::from_rgb(0, 82, 255)); // Alex Albon, Williams
-    colors.insert(24, egui::Color32::from_rgb(165, 160, 155)); // Zhou Guanyu, Stake F1
-    colors.insert(27, egui::Color32::from_rgb(160, 207, 205)); // Nico Hulkenberg, Haas
-    colors.insert(31, egui::Color32::from_rgb(2, 144, 240)); // Esteban Ocon, Alpine
-    colors.insert(40, egui::Color32::from_rgb(60, 130, 200)); // Liam Lawson, AlphaTauri
-    colors.insert(44, egui::Color32::from_rgb(0, 210, 190)); // Lewis Hamilton, Mercedes
-    colors.insert(55, egui::Color32::from_rgb(220, 0, 0)); // Carlos Sainz, Ferrari
-    colors.insert(63, egui::Color32::from_rgb(0, 210, 190)); // George Russell, Mercedes
-    colors.insert(77, egui::Color32::from_rgb(165, 160, 155)); // Valtteri Bottas, Stake F1
-    colors.insert(81, egui::Color32::from_rgb(255, 135, 0)); // Oscar Piastri, McLaren
-
-    let app = PlotApp::new(coordinates, run_race_data, colors, driver_info);
+    let app = PlotApp::new(coordinates, run_race_data, driver_info);
 
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
@@ -550,7 +525,6 @@ fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
         LedCoordinate { x_led: 6839.0, y_led: -46.0 }, // U96
     ])
 }
-
 
 fn generate_run_race_data(
     raw_data: &[LocationData],
