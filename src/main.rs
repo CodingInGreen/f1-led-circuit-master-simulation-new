@@ -1,33 +1,35 @@
 use chrono::{DateTime, Utc};
 use eframe::{egui, App, Frame};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use serde::de::{self, Deserializer};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::result::Result;
 use std::time::Instant;
 use tokio;
-use async_channel::{Sender, Receiver};
-use futures_util::stream::StreamExt;
 use bytes::Bytes;
+use futures_util::stream::StreamExt;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct LocationData {
     x: f64,
     y: f64,
+    z: f64,
+    driver_number: u32,
     #[serde(deserialize_with = "deserialize_datetime")]
     date: DateTime<Utc>,
-    driver_number: u32,
+    session_key: u32,
+    meeting_key: u32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Clone, Debug, Deserialize)]
 struct LedCoordinate {
     x_led: f64,
     y_led: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct RunRace {
     date: DateTime<Utc>,
     driver_number: u32,
@@ -35,7 +37,7 @@ struct RunRace {
     y_led: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 struct DriverInfo {
     number: u32,
     name: &'static str,
@@ -43,26 +45,29 @@ struct DriverInfo {
     color: egui::Color32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct PlotApp {
     coordinates: Vec<LedCoordinate>,
     run_race_data: Vec<RunRace>,
     start_time: Instant,
-    race_time: f64,
+    race_time: f64, // Elapsed race time in seconds
     race_started: bool,
     data_loading_started: bool,
     data_loaded: bool,
     driver_info: Vec<DriverInfo>,
     current_index: usize,
-    led_states: HashMap<(i64, i64), egui::Color32>,
-    last_positions: HashMap<u32, (i64, i64)>,
-    speed: i32,
-    completion_sender: Option<Sender<()>>,
-    completion_receiver: Option<Receiver<()>>,
+    led_states: HashMap<(i64, i64), egui::Color32>, // Tracks the current state of the LEDs
+    last_positions: HashMap<u32, (i64, i64)>,       // Last known positions of each driver
+    speed: i32,                                     // Playback speed multiplier
+    completion_sender: Option<async_channel::Sender<()>>,
+    completion_receiver: Option<async_channel::Receiver<()>>,
 }
 
 impl PlotApp {
-    fn new(coordinates: Vec<LedCoordinate>, driver_info: Vec<DriverInfo>) -> PlotApp {
+    fn new(
+        coordinates: Vec<LedCoordinate>,
+        driver_info: Vec<DriverInfo>,
+    ) -> PlotApp {
         let (completion_sender, completion_receiver) = async_channel::bounded(1);
 
         PlotApp {
@@ -75,8 +80,8 @@ impl PlotApp {
             data_loaded: false,
             driver_info,
             current_index: 0,
-            led_states: HashMap::new(),
-            last_positions: HashMap::new(),
+            led_states: HashMap::new(), // Initialize empty LED state tracking
+            last_positions: HashMap::new(), // Initialize empty last positions hashmap
             speed: 1,
             completion_sender: Some(completion_sender),
             completion_receiver: Some(completion_receiver),
@@ -88,8 +93,8 @@ impl PlotApp {
         self.race_time = 0.0;
         self.race_started = false;
         self.current_index = 0;
-        self.led_states.clear();
-        self.last_positions.clear();
+        self.led_states.clear(); // Reset LED states
+        self.last_positions.clear(); // Reset last positions
     }
 
     fn update_race(&mut self) {
@@ -100,7 +105,8 @@ impl PlotApp {
             let mut next_index = self.current_index;
             while next_index < self.run_race_data.len() {
                 let run_data = &self.run_race_data[next_index];
-                let race_data_time = (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
+                let race_data_time =
+                    (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
                 if race_data_time <= self.race_time {
                     next_index += 1;
                 } else {
@@ -122,11 +128,18 @@ impl PlotApp {
                 Self::scale_f64(run_data.y_led, 1_000_000),
             );
 
-            self.last_positions.insert(run_data.driver_number, coord_key);
+            // Update the last known position of the driver
+            self.last_positions
+                .insert(run_data.driver_number, coord_key);
         }
 
+        // Update the LED states for all known positions
         for (&driver_number, &position) in &self.last_positions {
-            let color = self.driver_info.iter().find(|&driver| driver.number == driver_number).map_or(egui::Color32::WHITE, |driver| driver.color);
+            let color = self
+                .driver_info
+                .iter()
+                .find(|&driver| driver.number == driver_number)
+                .map_or(egui::Color32::WHITE, |driver| driver.color);
             self.led_states.insert(position, color);
         }
     }
@@ -162,7 +175,7 @@ impl PlotApp {
 
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk?;
-                    println!("Received a chunk of data for driver number {}", driver_number);
+                    //println!("Received a chunk of data for driver number {}", driver_number);
                     process_and_visualize_chunk(&mut app_clone, chunk, &mut buffer).await?;
                 }
 
@@ -170,7 +183,7 @@ impl PlotApp {
             }));
         }
 
-        // Await all tasks concurrently using `futures::future::join_all`
+        // Await all tasks concurrently using `tokio::join!`
         let results = futures::future::join_all(handles).await;
 
         // Handle any errors
@@ -399,22 +412,35 @@ fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
     ])
 }
 
-fn generate_run_race_data(raw_data: &[LocationData], coordinates: &[LedCoordinate]) -> Vec<RunRace> {
-    raw_data.iter().map(|data| {
-        let (nearest_coord, _distance) = coordinates.iter().map(|coord| {
-            let distance = ((data.x - coord.x_led).powi(2) + (data.y - coord.y_led).powi(2)).sqrt();
-            (coord, distance)
-        }).min_by(|(_, dist_a), (_, dist_b)| {
-            dist_a.partial_cmp(dist_b).unwrap_or(std::cmp::Ordering::Equal)
-        }).unwrap();
+fn generate_run_race_data(
+    raw_data: &[LocationData],
+    coordinates: &[LedCoordinate],
+) -> Vec<RunRace> {
+    raw_data
+        .iter()
+        .map(|data| {
+            let (nearest_coord, _distance) = coordinates
+                .iter()
+                .map(|coord| {
+                    let distance =
+                        ((data.x - coord.x_led).powi(2) + (data.y - coord.y_led).powi(2)).sqrt();
+                    (coord, distance)
+                })
+                .min_by(|(_, dist_a), (_, dist_b)| {
+                    dist_a
+                        .partial_cmp(dist_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap();
 
-        RunRace {
-            date: data.date,
-            driver_number: data.driver_number,
-            x_led: nearest_coord.x_led,
-            y_led: nearest_coord.y_led,
-        }
-    }).collect()
+            RunRace {
+                date: data.date,
+                driver_number: data.driver_number,
+                x_led: nearest_coord.x_led,
+                y_led: nearest_coord.y_led,
+            }
+        })
+        .collect()
 }
 
 async fn fetch_data_in_chunks(url: &str, _chunk_size: usize) -> Result<impl futures_util::stream::Stream<Item = Result<Bytes, reqwest::Error>>, Box<dyn StdError + Send + Sync>> {
@@ -426,18 +452,29 @@ async fn fetch_data_in_chunks(url: &str, _chunk_size: usize) -> Result<impl futu
 
 async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &mut Vec<u8>) -> Result<(), Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
-    println!("Processing a new chunk of data...");
-    println!("Current buffer content size: {}", buffer.len());
+    //println!("Processing a new chunk of data...");
+    //println!("Current buffer content size: {}", buffer.len());
 
-    while let Some(position) = buffer.iter().position(|&c| c == b'}') {
-        let end = position + 1;
-        if let Ok(location_data) = serde_json::from_slice::<LocationData>(&buffer[..end]) {
-            let run_race_data = generate_run_race_data(&[location_data], &app.coordinates);
-            app.update_with_data(run_race_data);
-            app.update_race(); // Ensure visualization updates with new data
-            buffer.drain(..end); // Remove the processed data from the buffer
+    // Deserialize complete JSON objects from the buffer
+    while let Some(start_pos) = buffer.windows(2).position(|w| w == b"[{") {
+        if let Some(end_pos) = buffer.windows(2).position(|w| w == b"}]") {
+            let json_slice = &buffer[start_pos..=end_pos+1];
+            println!("Attempting to deserialize slice: {:?}", std::str::from_utf8(json_slice));
+
+            match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
+                Ok(location_data) => {
+                    let run_race_data = generate_run_race_data(&location_data, &app.coordinates);
+                    app.update_with_data(run_race_data);
+                    buffer.drain(..=end_pos+1); // Remove the processed data from the buffer
+                },
+                Err(e) => {
+                    println!("Failed to deserialize LocationData: {:?}", e);
+                    break; // Break the loop if we can't deserialize a complete object
+                }
+            }
         } else {
-            break; // Break the loop if we can't deserialize a complete object
+            // If end_pos is None, it means the buffer does not contain a complete JSON object yet
+            break;
         }
     }
 
