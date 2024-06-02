@@ -80,7 +80,6 @@ impl PlotApp {
         }
     }
 
-
     fn reset(&mut self) {
         self.start_time = Instant::now();
         self.race_time = 0.0;
@@ -89,14 +88,17 @@ impl PlotApp {
         self.run_race_data.clear();
         self.led_states.clear(); // Reset LED states
         self.last_positions.clear(); // Reset last positions
+        println!("Race reset");
     }
 
     fn update_race(&mut self) {
         if self.race_started {
             let elapsed = self.start_time.elapsed().as_secs_f64();
             self.race_time = elapsed * self.speed as f64;
+            println!("Updating race: elapsed time = {:.2}", self.race_time);
 
             while let Ok(run_data) = self.data_receiver.try_recv() {
+                println!("Received data: {:?}", run_data);
                 let (nearest_coord, _distance) = self.coordinates
                     .iter()
                     .map(|coord| {
@@ -110,6 +112,8 @@ impl PlotApp {
                             .unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .unwrap();
+
+                println!("Mapped to LED coordinate: {:?}", nearest_coord);
 
                 self.run_race_data.push(RunRace {
                     date: run_data.date,
@@ -132,6 +136,8 @@ impl PlotApp {
                 Self::scale_f64(run_data.y_led, 1_000_000),
             );
 
+            println!("Updating LED state for driver {}: {:?}", run_data.driver_number, coord_key);
+
             // Update the last known position of the driver
             self.last_positions
                 .insert(run_data.driver_number, coord_key);
@@ -144,6 +150,7 @@ impl PlotApp {
                 .iter()
                 .find(|&driver| driver.number == driver_number)
                 .map_or(egui::Color32::WHITE, |driver| driver.color);
+            println!("Setting LED at position {:?} to color {:?}", position, color);
             self.led_states.insert(position, color);
         }
     }
@@ -195,6 +202,7 @@ impl App for PlotApp {
                     self.current_index = 0;
                     self.run_race_data.clear();
                     self.led_states.clear(); // Clear LED states when race starts
+                    println!("Race started");
                 }
                 if ui.button("STOP").clicked() {
                     self.reset();
@@ -431,6 +439,7 @@ async fn fetch_and_send_data(sender: Sender<LocationData>) {
                 if resp.status().is_success() {
                     if let Ok(data) = resp.json::<Vec<LocationData>>().await {
                         for entry in data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0) {
+                            println!("Fetched data for driver {}: {:?}", driver_number, entry);
                             if sender.send(entry).await.is_err() {
                                 eprintln!("Failed to send data to channel");
                                 return;
