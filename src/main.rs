@@ -228,9 +228,11 @@ impl App for PlotApp {
                 ));
                 ui.separator();
 
-                if ui.button("DOWNLOAD DATA").clicked() {
+                if ui.button("START").clicked() {
                     if !self.data_loading_started {
                         self.data_loading_started = true;
+                        self.race_started = true;
+                        self.start_time = Instant::now();
                         let mut app_clone = self.clone();
                         let sender = self.completion_sender.clone().unwrap();
                         tokio::spawn(async move {
@@ -240,28 +242,6 @@ impl App for PlotApp {
                     }
                 }
 
-                let color = if self.data_loaded {
-                    egui::Color32::GREEN
-                } else if self.data_loading_started {
-                    egui::Color32::YELLOW
-                } else {
-                    egui::Color32::RED
-                };
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_size(ui.cursor().min, egui::vec2(20.0, 20.0)),
-                    0.0,
-                    color,
-                );
-                ui.separator();
-
-                if ui.button("START").clicked() {
-                    if self.data_loaded {
-                        self.race_started = true;
-                        self.start_time = Instant::now();
-                        self.current_index = 0;
-                        self.led_states.clear();
-                    }
-                }
                 if ui.button("STOP").clicked() {
                     self.reset();
                 }
