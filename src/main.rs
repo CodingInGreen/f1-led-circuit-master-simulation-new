@@ -170,7 +170,7 @@ impl PlotApp {
             }));
         }
 
-        // Await all tasks concurrently using `tokio::join!`
+        // Await all tasks concurrently using `futures::future::join_all`
         let results = futures::future::join_all(handles).await;
 
         // Handle any errors
@@ -297,7 +297,6 @@ impl App for PlotApp {
         ctx.request_repaint();
     }
 }
-
 
 fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
     Ok(vec![
@@ -435,6 +434,7 @@ async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &m
         if let Ok(location_data) = serde_json::from_slice::<LocationData>(&buffer[..end]) {
             let run_race_data = generate_run_race_data(&[location_data], &app.coordinates);
             app.update_with_data(run_race_data);
+            app.update_race(); // Ensure visualization updates with new data
             buffer.drain(..end); // Remove the processed data from the buffer
         } else {
             break; // Break the loop if we can't deserialize a complete object
