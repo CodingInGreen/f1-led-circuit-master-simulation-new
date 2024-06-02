@@ -177,7 +177,7 @@ impl PlotApp {
 
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk?;
-                    //println!("Received a chunk of data for driver number {}", driver_number);
+                    println!("Received a chunk of data for driver number {}", driver_number);
                     process_and_visualize_chunk(&mut app_clone, chunk, &mut buffer).await?;
                 }
 
@@ -454,8 +454,8 @@ async fn fetch_data_in_chunks(url: &str, _chunk_size: usize) -> Result<impl futu
 
 async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &mut Vec<u8>) -> Result<(), Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
-    //println!("Processing a new chunk of data...");
-    //println!("Current buffer content size: {}", buffer.len());
+    println!("Processing a new chunk of data...");
+    println!("Current buffer content size: {}", buffer.len());
 
     // Deserialize complete JSON objects from the buffer
     while let Some(start_pos) = buffer.windows(2).position(|w| w == b"[{") {
