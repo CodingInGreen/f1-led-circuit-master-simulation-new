@@ -456,7 +456,7 @@ async fn fetch_and_send_data(sender: Sender<LocationData>) {
             }
         }
 
-        time::sleep(Duration::from_secs(1)).await; // Fetch new data every second
+        //time::sleep(Duration::from_secs(1)).await; // Fetch new data every second
     }
 }
 
