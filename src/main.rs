@@ -121,18 +121,18 @@ impl PlotApp {
 
     fn update_led_states(&mut self) {
         self.led_states.clear();
-
+    
         for run_data in &self.run_race_data[..self.current_index] {
             let coord_key = (
                 Self::scale_f64(run_data.x_led, 1_000_000),
                 Self::scale_f64(run_data.y_led, 1_000_000),
             );
-
+    
             // Update the last known position of the driver
             self.last_positions
                 .insert(run_data.driver_number, coord_key);
         }
-
+    
         // Update the LED states for all known positions
         for (&driver_number, &position) in &self.last_positions {
             let color = self
@@ -140,6 +140,8 @@ impl PlotApp {
                 .iter()
                 .find(|&driver| driver.number == driver_number)
                 .map_or(egui::Color32::WHITE, |driver| driver.color);
+            // Print LED positions and corresponding colors
+            println!("LED position: {:?}, Color: {:?}", position, color);
             self.led_states.insert(position, color);
         }
     }
@@ -168,7 +170,7 @@ impl PlotApp {
 
             let mut app_clone = self.clone();
             handles.push(tokio::spawn(async move {
-                println!("Starting to stream data for driver number {}", driver_number);
+                //println!("Starting to stream data for driver number {}", driver_number);
 
                 let mut stream = fetch_data_in_chunks(&url, 8 * 1024).await?;
                 let mut buffer = Vec::new();
@@ -459,7 +461,13 @@ async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &m
     while let Some(start_pos) = buffer.windows(2).position(|w| w == b"[{") {
         if let Some(end_pos) = buffer.windows(2).position(|w| w == b"}]") {
             let json_slice = &buffer[start_pos..=end_pos+1];
-            println!("Attempting to deserialize slice: {:?}", std::str::from_utf8(json_slice));
+            println!(
+                "Attempting to deserialize slice: {}",
+                match std::str::from_utf8(json_slice) {
+                    Ok(s) => s.to_string(),
+                    Err(e) => format!("Error: {:?}", e),
+                }
+            );
 
             match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
                 Ok(location_data) => {
