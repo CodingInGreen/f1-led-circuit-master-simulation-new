@@ -113,6 +113,8 @@ impl PlotApp {
                 Self::scale_f64(run_data.y_led, 1_000_000),
             );
 
+            println!("Driver {} moved to LED position {:?}", run_data.driver_number, coord_key);
+
             // Update the last known position of the driver
             self.last_positions
                 .insert(run_data.driver_number, coord_key);
@@ -125,6 +127,10 @@ impl PlotApp {
                 .iter()
                 .find(|&driver| driver.number == driver_number)
                 .map_or(egui::Color32::WHITE, |driver| driver.color);
+            println!(
+                "LED at position {:?} set to color {:?} for driver {}",
+                position, color, driver_number
+            );
             self.led_states.insert(position, color);
         }
     }
