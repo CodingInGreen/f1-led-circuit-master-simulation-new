@@ -113,7 +113,7 @@ impl PlotApp {
                     })
                     .unwrap();
 
-                println!("Mapped to LED coordinate: {:?}", nearest_coord);
+                println!("Driver {} moved to LED position ({}, {})", run_data.driver_number, nearest_coord.x_led, nearest_coord.y_led);
 
                 self.run_race_data.push(RunRace {
                     date: run_data.date,
@@ -421,7 +421,6 @@ async fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-
 async fn fetch_and_send_data(sender: Sender<LocationData>) {
     let session_key = "9149";
     let driver_numbers = vec![
@@ -456,9 +455,10 @@ async fn fetch_and_send_data(sender: Sender<LocationData>) {
             }
         }
 
-        //time::sleep(Duration::from_secs(1)).await; // Fetch new data every second
+        time::sleep(Duration::from_secs(1)).await; // Fetch new data every second
     }
 }
+
 
 fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
     Ok(vec![
@@ -560,6 +560,7 @@ fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
         LedCoordinate { x_led: 6839.0, y_led: -46.0 }, // U96
     ])
 }
+
 
 fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
 where
