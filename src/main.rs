@@ -8,6 +8,9 @@ use std::error::Error as StdError;
 use std::result::Result;
 use std::time::Instant;
 use tokio;
+use tokio::sync::mpsc::{self, Sender, Receiver};
+use tokio::task;
+use tokio::time::{self, Duration};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct LocationData {
@@ -51,17 +54,19 @@ struct PlotApp {
     led_states: HashMap<(i64, i64), egui::Color32>, // Tracks the current state of the LEDs
     last_positions: HashMap<u32, (i64, i64)>,       // Last known positions of each driver
     speed: i32,                                     // Playback speed multiplier
+    data_sender: Option<Sender<LocationData>>,      // Sender to send new data
+    data_receiver: Receiver<LocationData>,          // Receiver to receive new data
 }
 
 impl PlotApp {
     fn new(
         coordinates: Vec<LedCoordinate>,
-        run_race_data: Vec<RunRace>,
         driver_info: Vec<DriverInfo>,
+        data_receiver: Receiver<LocationData>,
     ) -> PlotApp {
         PlotApp {
             coordinates,
-            run_race_data,
+            run_race_data: Vec::new(),
             start_time: Instant::now(),
             race_time: 0.0,
             race_started: false,
@@ -70,14 +75,18 @@ impl PlotApp {
             led_states: HashMap::new(), // Initialize empty LED state tracking
             last_positions: HashMap::new(), // Initialize empty last positions hashmap
             speed: 1,
+            data_sender: None,
+            data_receiver,
         }
     }
+
 
     fn reset(&mut self) {
         self.start_time = Instant::now();
         self.race_time = 0.0;
         self.race_started = false;
         self.current_index = 0;
+        self.run_race_data.clear();
         self.led_states.clear(); // Reset LED states
         self.last_positions.clear(); // Reset last positions
     }
@@ -87,19 +96,29 @@ impl PlotApp {
             let elapsed = self.start_time.elapsed().as_secs_f64();
             self.race_time = elapsed * self.speed as f64;
 
-            let mut next_index = self.current_index;
-            while next_index < self.run_race_data.len() {
-                let run_data = &self.run_race_data[next_index];
-                let race_data_time =
-                    (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
-                if race_data_time <= self.race_time {
-                    next_index += 1;
-                } else {
-                    break;
-                }
+            while let Ok(run_data) = self.data_receiver.try_recv() {
+                let (nearest_coord, _distance) = self.coordinates
+                    .iter()
+                    .map(|coord| {
+                        let distance =
+                            ((run_data.x - coord.x_led).powi(2) + (run_data.y - coord.y_led).powi(2)).sqrt();
+                        (coord, distance)
+                    })
+                    .min_by(|(_, dist_a), (_, dist_b)| {
+                        dist_a
+                            .partial_cmp(dist_b)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .unwrap();
+
+                self.run_race_data.push(RunRace {
+                    date: run_data.date,
+                    driver_number: run_data.driver_number,
+                    x_led: nearest_coord.x_led,
+                    y_led: nearest_coord.y_led,
+                });
             }
 
-            self.current_index = next_index;
             self.update_led_states();
         }
     }
@@ -107,7 +126,7 @@ impl PlotApp {
     fn update_led_states(&mut self) {
         self.led_states.clear();
 
-        for run_data in &self.run_race_data[..self.current_index] {
+        for run_data in &self.run_race_data {
             let coord_key = (
                 Self::scale_f64(run_data.x_led, 1_000_000),
                 Self::scale_f64(run_data.y_led, 1_000_000),
@@ -174,6 +193,7 @@ impl App for PlotApp {
                     self.race_started = true;
                     self.start_time = Instant::now();
                     self.current_index = 0;
+                    self.run_race_data.clear();
                     self.led_states.clear(); // Clear LED states when race starts
                 }
                 if ui.button("STOP").clicked() {
@@ -249,14 +269,9 @@ impl App for PlotApp {
     }
 }
 
-fn main() -> Result<(), Box<dyn StdError>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn StdError>> {
     let coordinates = read_coordinates()?; // Unwrap the result here
-
-    // Initialize the runtime for async execution
-    let runtime = tokio::runtime::Runtime::new()?;
-    let raw_data = runtime.block_on(fetch_data())?;
-
-    let run_race_data = generate_run_race_data(&raw_data, &coordinates);
 
     let driver_info = vec![
         DriverInfo {
@@ -381,7 +396,12 @@ fn main() -> Result<(), Box<dyn StdError>> {
         },
     ];
 
-    let app = PlotApp::new(coordinates, run_race_data, driver_info);
+    let (data_sender, data_receiver) = mpsc::channel(100);
+
+    let app = PlotApp::new(coordinates, driver_info, data_receiver);
+
+    // Spawn the task to fetch and send data
+    task::spawn(fetch_and_send_data(data_sender));
 
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
@@ -393,36 +413,42 @@ fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-async fn fetch_data() -> Result<Vec<LocationData>, Box<dyn StdError>> {
+
+async fn fetch_and_send_data(sender: Sender<LocationData>) {
     let session_key = "9149";
     let driver_numbers = vec![
         1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
     ];
 
     let client = Client::new();
-    let mut all_data: Vec<LocationData> = Vec::new();
-
-    for driver_number in driver_numbers {
-        let url = format!(
-            "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
-            session_key, driver_number
-        );
-        let resp = client.get(&url).send().await?;
-        if resp.status().is_success() {
-            let data: Vec<LocationData> = resp.json().await?;
-            all_data.extend(data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0));
-        } else {
-            eprintln!(
-                "Failed to fetch data for driver {}: HTTP {}",
-                driver_number,
-                resp.status()
+    loop {
+        for driver_number in &driver_numbers {
+            let url = format!(
+                "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
+                session_key, driver_number
             );
+            if let Ok(resp) = client.get(&url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(data) = resp.json::<Vec<LocationData>>().await {
+                        for entry in data.into_iter().filter(|d| d.x != 0.0 && d.y != 0.0) {
+                            if sender.send(entry).await.is_err() {
+                                eprintln!("Failed to send data to channel");
+                                return;
+                            }
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "Failed to fetch data for driver {}: HTTP {}",
+                        driver_number,
+                        resp.status()
+                    );
+                }
+            }
         }
-    }
 
-    // Sort the data by the date field
-    all_data.sort_by_key(|d| d.date);
-    Ok(all_data)
+        time::sleep(Duration::from_secs(1)).await; // Fetch new data every second
+    }
 }
 
 fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
@@ -524,37 +550,6 @@ fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
         LedCoordinate { x_led: 7274.0, y_led: -35.0 }, // U95
         LedCoordinate { x_led: 6839.0, y_led: -46.0 }, // U96
     ])
-}
-
-fn generate_run_race_data(
-    raw_data: &[LocationData],
-    coordinates: &[LedCoordinate],
-) -> Vec<RunRace> {
-    raw_data
-        .iter()
-        .map(|data| {
-            let (nearest_coord, _distance) = coordinates
-                .iter()
-                .map(|coord| {
-                    let distance =
-                        ((data.x - coord.x_led).powi(2) + (data.y - coord.y_led).powi(2)).sqrt();
-                    (coord, distance)
-                })
-                .min_by(|(_, dist_a), (_, dist_b)| {
-                    dist_a
-                        .partial_cmp(dist_b)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .unwrap();
-
-            RunRace {
-                date: data.date,
-                driver_number: data.driver_number,
-                x_led: nearest_coord.x_led,
-                y_led: nearest_coord.y_led,
-            }
-        })
-        .collect()
 }
 
 fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
