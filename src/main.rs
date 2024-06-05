@@ -594,8 +594,13 @@ async fn process_chunk(
 
             match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
                 Ok(location_data) => {
+                    // Print deserialized JSON data
+                    for data in &location_data {
+                        println!("{:?}", data);
+                    }
+
                     let new_run_race_data = generate_run_race_data(&location_data, coordinates);
-                    
+
                     // Debug printing with panic protection
                     {
                         const MAX_ITERATIONS: usize = 1;
@@ -606,7 +611,7 @@ async fn process_chunk(
                             println!("{:?}", data);
                         }
                     }
-                    
+
                     rows_processed += new_run_race_data.len();
                     run_race_data.extend(new_run_race_data); // Move new_run_race_data here
                     if rows_processed >= max_rows {
@@ -627,6 +632,7 @@ async fn process_chunk(
 
     Ok(run_race_data)
 }
+
 
 async fn visualize_data(app: &mut PlotApp, run_race_data: Vec<RunRace>) {
     app.update_with_data(run_race_data);
