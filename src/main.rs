@@ -528,7 +528,6 @@ async fn process_chunk(
 
 
 
-
 async fn visualize_data(app: &mut PlotApp, run_race_data: Vec<RunRace>) {
     app.update_with_data(run_race_data);
     app.update_led_states();
