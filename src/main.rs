@@ -460,110 +460,6 @@ async fn fetch_data_in_chunks(url: &str, _chunk_size: usize) -> Result<impl futu
 }
 
 
-async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &mut Vec<u8>) -> Result<(), Box<dyn StdError + Send + Sync>> {
-    buffer.extend_from_slice(&chunk);
-    println!("Processing a new chunk of data...");
-    println!("Current buffer content size: {}", buffer.len());
-
-    // Deserialize complete JSON objects from the buffer
-    while let Some(start_pos) = buffer.windows(2).position(|w| w == b"[{") {
-        if let Some(end_pos) = buffer.windows(2).position(|w| w == b"}]") {
-            let json_slice = &buffer[start_pos..=end_pos+1];
-            println!(
-                "Attempting to deserialize slice: {}",
-                match std::str::from_utf8(json_slice) {
-                    Ok(s) => s.to_string(),
-                    Err(e) => format!("Error: {:?}", e),
-                }
-            );
-
-            match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
-                Ok(location_data) => {
-                    let run_race_data = generate_run_race_data(&location_data, &app.coordinates);
-                    
-                        // Debug printing with panic protection
-                        {
-                        const MAX_ITERATIONS: usize = 1;
-                        for (i, data) in run_race_data.iter().enumerate() {
-                            if i >= MAX_ITERATIONS {
-                                panic!("Too many iterations!");
-                            }
-                            println!("{:?}", data);
-                        }}
-                    
-                    app.update_with_data(run_race_data);
-                    buffer.drain(..=end_pos+1); // Remove the processed data from the buffer
-                },
-                Err(e) => {
-                    println!("Failed to deserialize LocationData: {:?}", e);
-                    break; // Break the loop if we can't deserialize a complete object
-                }
-            }
-        } else {
-            // If end_pos is None, it means the buffer does not contain a complete JSON object yet
-            break;
-        }
-    }
-
-    Ok(())
-}
-
-
-/* 
-
-async fn process_chunk(chunk: Bytes, buffer: &mut Vec<u8>, coordinates: &[LedCoordinate]) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
-    buffer.extend_from_slice(&chunk);
-    println!("Processing a new chunk of data...");
-    println!("Current buffer content size: {}", buffer.len());
-
-    let mut run_race_data = Vec::new();
-
-    // Deserialize complete JSON objects from the buffer
-    while let Some(start_pos) = buffer.windows(2).position(|w| w == b"[{") {
-        if let Some(end_pos) = buffer.windows(2).position(|w| w == b"}]") {
-            let json_slice = &buffer[start_pos..=end_pos+1];
-            println!(
-                "Attempting to deserialize slice: {}",
-                match std::str::from_utf8(json_slice) {
-                    Ok(s) => s.to_string(),
-                    Err(e) => format!("Error: {:?}", e),
-                }
-            );
-
-            match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
-                Ok(location_data) => {
-                    let new_run_race_data = generate_run_race_data(&location_data, coordinates);
-                    
-                    // Debug printing with panic protection
-                    {
-                        const MAX_ITERATIONS: usize = 1;
-                        for (i, data) in new_run_race_data.iter().enumerate() {
-                            if i >= MAX_ITERATIONS {
-                                panic!("Too many iterations!");
-                            }
-                            println!("{:?}", data);
-                        }
-                    }
-                    
-                    run_race_data.extend(new_run_race_data);
-                    buffer.drain(..=end_pos+1); // Remove the processed data from the buffer
-                },
-                Err(e) => {
-                    println!("Failed to deserialize LocationData: {:?}", e);
-                    break; // Break the loop if we can't deserialize a complete object
-                }
-            }
-        } else {
-            // If end_pos is None, it means the buffer does not contain a complete JSON object yet
-            break;
-        }
-    }
-
-    Ok(run_race_data)
-}
-
-*/
-
 async fn process_chunk(
     chunk: Bytes, 
     buffer: &mut Vec<u8>, 
@@ -577,68 +473,64 @@ async fn process_chunk(
     let mut run_race_data = Vec::new();
     let mut rows_processed = 0;
 
-    // Debug print to check buffer contents
-    println!("Buffer content: {:?}", String::from_utf8_lossy(&buffer));
+    // Convert the buffer to a string for processing
+    let buffer_str = String::from_utf8_lossy(&buffer);
+    let mut start_pos = 0;
 
-    // Deserialize complete JSON objects from the buffer
-    while let Some(start_pos) = buffer.windows(2).position(|w| w == b"[{") {
-        if let Some(end_pos) = buffer.windows(2).position(|w| w == b"}]") {
-            let json_slice = &buffer[start_pos..=end_pos+1];
-            println!(
-                "Attempting to deserialize slice: {}",
-                match std::str::from_utf8(json_slice) {
-                    Ok(s) => s.to_string(),
-                    Err(e) => format!("Error: {:?}", e),
+    while let Some(end_pos) = buffer_str[start_pos..].find("},{") {
+        let json_slice = &buffer_str[start_pos..start_pos + end_pos + 1];
+        let json_slice = format!("[{}]", json_slice); // Wrap in array brackets for deserialization
+
+        println!("Attempting to deserialize slice: {}", json_slice);
+
+        match serde_json::from_str::<Vec<LocationData>>(&json_slice) {
+            Ok(location_data) => {
+                // Print deserialized JSON data
+                for data in &location_data {
+                    println!("Deserialized JSON data: {:?}", data);
                 }
-            );
 
-            match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
-                Ok(location_data) => {
-                    // Print deserialized JSON data
-                    for data in &location_data {
+                let new_run_race_data = generate_run_race_data(&location_data, coordinates);
+
+                // Debug printing with panic protection
+                {
+                    const MAX_ITERATIONS: usize = 5;
+                    for (i, data) in new_run_race_data.iter().enumerate() {
+                        if i >= MAX_ITERATIONS {
+                            panic!("Too many iterations!");
+                        }
                         println!("{:?}", data);
                     }
-
-                    let new_run_race_data = generate_run_race_data(&location_data, coordinates);
-
-                    // Debug printing with panic protection
-                    {
-                        const MAX_ITERATIONS: usize = 1;
-                        for (i, data) in new_run_race_data.iter().enumerate() {
-                            if i >= MAX_ITERATIONS {
-                                panic!("Too many iterations!");
-                            }
-                            println!("{:?}", data);
-                        }
-                    }
-
-                    rows_processed += new_run_race_data.len();
-                    run_race_data.extend(new_run_race_data); // Move new_run_race_data here
-                    if rows_processed >= max_rows {
-                        println!("Reached max rows limit: {}", max_rows);
-                        break;
-                    }
-                },
-                Err(e) => {
-                    println!("Failed to deserialize LocationData: {:?}", e);
-                    break; // Break the loop if we can't deserialize a complete object
                 }
+
+                rows_processed += new_run_race_data.len();
+                run_race_data.extend(new_run_race_data); // Move new_run_race_data here
+                start_pos += end_pos + 2; // Move past the processed part
+                if rows_processed >= max_rows {
+                    println!("Reached max rows limit: {}", max_rows);
+                    break;
+                }
+            },
+            Err(e) => {
+                println!("Failed to deserialize LocationData: {:?}", e);
+                break; // Break the loop if we can't deserialize a complete object
             }
-        } else {
-            // If end_pos is None, it means the buffer does not contain a complete JSON object yet
-            break;
         }
     }
 
+    // Retain the unprocessed part of the buffer
+    *buffer = buffer_str[start_pos..].as_bytes().to_vec();
+
     Ok(run_race_data)
 }
+
+
 
 
 async fn visualize_data(app: &mut PlotApp, run_race_data: Vec<RunRace>) {
     app.update_with_data(run_race_data);
     app.update_led_states();
 }
-
 
 
 fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
