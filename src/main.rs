@@ -157,54 +157,59 @@ impl PlotApp {
 
 
 
-   async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
-    let driver_numbers = vec![
-        1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
-    ];
+    async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        let driver_numbers = vec![
+            1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
+        ];
 
-    let mut handles = Vec::new();
+        let mut handles = Vec::new();
+        let max_rows_per_driver = 500;
 
-    for driver_number in driver_numbers {
-        let url = format!(
-            "https://api.openf1.org/v1/location?session_key={}&driver_number={}&limit=250",
-            "9149", driver_number
-        );
+        for driver_number in driver_numbers {
+            let url = format!(
+                "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
+                "9149", driver_number
+            );
 
-        let mut app_clone = self.clone();
-        handles.push(tokio::spawn(async move {
-            let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
-            let mut buffer = Vec::new();
+            let mut app_clone = self.clone();
+            handles.push(tokio::spawn(async move {
+                let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
+                let mut buffer = Vec::new();
 
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk?;
-                println!("Received a chunk of data for driver number {}", driver_number);
-                let run_race_data = process_chunk(chunk, &mut buffer, &app_clone.coordinates).await?;
-                visualize_data(&mut app_clone, run_race_data).await;
-            }
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    println!("Received a chunk of data for driver number {}", driver_number);
+                    let run_race_data = process_chunk(chunk, &mut buffer, &app_clone.coordinates, max_rows_per_driver).await?;
+                    visualize_data(&mut app_clone, run_race_data).await;
 
-            Ok::<(), Box<dyn StdError + Send + Sync>>(())
-        }));
-    }
+                    if buffer.len() >= max_rows_per_driver {
+                        break;
+                    }
+                }
 
-    // Await all tasks concurrently using `tokio::join!`
-    let results = futures::future::join_all(handles).await;
-
-    // Handle any errors
-    for result in results {
-        if let Err(e) = result {
-            eprintln!("Error fetching data: {:?}", e);
+                Ok::<(), Box<dyn StdError + Send + Sync>>(())
+            }));
         }
+
+        // Await all tasks concurrently using `tokio::join!`
+        let results = futures::future::join_all(handles).await;
+
+        // Handle any errors
+        for result in results {
+            if let Err(e) = result {
+                eprintln!("Error fetching data: {:?}", e);
+            }
+        }
+
+        println!("Finished streaming data for all drivers");
+        self.data_loaded = true; // Set the flag to true
+
+        if let Some(sender) = &self.completion_sender {
+            let _ = sender.send(()).await;
+        }
+
+        Ok(())
     }
-
-    println!("Finished streaming data for all drivers");
-    self.data_loaded = true; // Set the flag to true
-
-    if let Some(sender) = &self.completion_sender {
-        let _ = sender.send(()).await;
-    }
-
-    Ok(())
-}
 
 }
 
@@ -504,6 +509,7 @@ async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &m
 }
 
 
+/* 
 
 async fn process_chunk(chunk: Bytes, buffer: &mut Vec<u8>, coordinates: &[LedCoordinate]) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
@@ -541,6 +547,72 @@ async fn process_chunk(chunk: Bytes, buffer: &mut Vec<u8>, coordinates: &[LedCoo
                     
                     run_race_data.extend(new_run_race_data);
                     buffer.drain(..=end_pos+1); // Remove the processed data from the buffer
+                },
+                Err(e) => {
+                    println!("Failed to deserialize LocationData: {:?}", e);
+                    break; // Break the loop if we can't deserialize a complete object
+                }
+            }
+        } else {
+            // If end_pos is None, it means the buffer does not contain a complete JSON object yet
+            break;
+        }
+    }
+
+    Ok(run_race_data)
+}
+
+*/
+
+async fn process_chunk(
+    chunk: Bytes, 
+    buffer: &mut Vec<u8>, 
+    coordinates: &[LedCoordinate], 
+    max_rows: usize
+) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
+    buffer.extend_from_slice(&chunk);
+    println!("Processing a new chunk of data...");
+    println!("Current buffer content size: {}", buffer.len());
+
+    let mut run_race_data = Vec::new();
+    let mut rows_processed = 0;
+
+    // Debug print to check buffer contents
+    println!("Buffer content: {:?}", String::from_utf8_lossy(&buffer));
+
+    // Deserialize complete JSON objects from the buffer
+    while let Some(start_pos) = buffer.windows(2).position(|w| w == b"[{") {
+        if let Some(end_pos) = buffer.windows(2).position(|w| w == b"}]") {
+            let json_slice = &buffer[start_pos..=end_pos+1];
+            println!(
+                "Attempting to deserialize slice: {}",
+                match std::str::from_utf8(json_slice) {
+                    Ok(s) => s.to_string(),
+                    Err(e) => format!("Error: {:?}", e),
+                }
+            );
+
+            match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
+                Ok(location_data) => {
+                    let new_run_race_data = generate_run_race_data(&location_data, coordinates);
+                    
+                    // Debug printing with panic protection
+                    {
+                        const MAX_ITERATIONS: usize = 1;
+                        for (i, data) in new_run_race_data.iter().enumerate() {
+                            if i >= MAX_ITERATIONS {
+                                panic!("Too many iterations!");
+                            }
+                            println!("{:?}", data);
+                        }
+                    }
+                    
+                    rows_processed += new_run_race_data.len();
+                    run_race_data.extend(new_run_race_data); // Move new_run_race_data here
+                    if rows_processed >= max_rows {
+                        println!("Reached max rows limit: {}", max_rows);
+                        break;
+                    }
                 },
                 Err(e) => {
                     println!("Failed to deserialize LocationData: {:?}", e);
