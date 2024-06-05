@@ -477,35 +477,23 @@ async fn process_chunk(
     let buffer_str = String::from_utf8_lossy(&buffer);
     let mut start_pos = 0;
 
+    // Process the buffer string to find complete JSON objects
     while let Some(end_pos) = buffer_str[start_pos..].find("},{") {
+        // Extract the JSON object slice and remove brackets
         let json_slice = &buffer_str[start_pos..start_pos + end_pos + 1];
-        let json_slice = format!("[{}]", json_slice); // Wrap in array brackets for deserialization
+        let json_slice = json_slice.trim_start_matches('[').trim_end_matches(']');
 
         println!("Attempting to deserialize slice: {}", json_slice);
 
-        match serde_json::from_str::<Vec<LocationData>>(&json_slice) {
+        match serde_json::from_str::<LocationData>(json_slice) {
             Ok(location_data) => {
-                // Print deserialized JSON data
-                for data in &location_data {
-                    println!("Deserialized JSON data: {:?}", data);
-                }
+                println!("Deserialized JSON data: {:?}", location_data);
 
-                let new_run_race_data = generate_run_race_data(&location_data, coordinates);
-
-                // Debug printing with panic protection
-                {
-                    const MAX_ITERATIONS: usize = 5;
-                    for (i, data) in new_run_race_data.iter().enumerate() {
-                        if i >= MAX_ITERATIONS {
-                            panic!("Too many iterations!");
-                        }
-                        println!("{:?}", data);
-                    }
-                }
+                let new_run_race_data = generate_run_race_data(&[location_data], coordinates);
 
                 rows_processed += new_run_race_data.len();
-                run_race_data.extend(new_run_race_data); // Move new_run_race_data here
-                start_pos += end_pos + 2; // Move past the processed part
+                run_race_data.extend(new_run_race_data);
+                start_pos += end_pos + 3; // Move past the processed part
                 if rows_processed >= max_rows {
                     println!("Reached max rows limit: {}", max_rows);
                     break;
@@ -521,9 +509,15 @@ async fn process_chunk(
     // Retain the unprocessed part of the buffer
     *buffer = buffer_str[start_pos..].as_bytes().to_vec();
 
+    // Check if the remaining buffer contains a complete JSON object and process it
+    if let Ok(location_data) = serde_json::from_slice::<LocationData>(&buffer) {
+        let new_run_race_data = generate_run_race_data(&[location_data], coordinates);
+        run_race_data.extend(new_run_race_data);
+        *buffer = Vec::new(); // Clear the buffer after processing
+    }
+
     Ok(run_race_data)
 }
-
 
 
 
