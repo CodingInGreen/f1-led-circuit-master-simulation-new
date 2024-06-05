@@ -152,7 +152,7 @@ impl PlotApp {
 
     fn update_with_data(&mut self, data: Vec<RunRace>) {
         self.run_race_data.extend(data);
-        self.run_race_data.sort_by_key(|d| d.date);
+        self.run_race_data.sort_by_key(|d| std::cmp::Reverse(d.date));
     }
 
     async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
@@ -164,15 +164,15 @@ impl PlotApp {
 
         for driver_number in driver_numbers {
             let url = format!(
-                "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
+                "https://api.openf1.org/v1/location?session_key={}&driver_number={}&limit=250",
                 "9149", driver_number
-            );
+            );            
 
             let mut app_clone = self.clone();
             handles.push(tokio::spawn(async move {
                 //println!("Starting to stream data for driver number {}", driver_number);
 
-                let mut stream = fetch_data_in_chunks(&url, 8 * 1024).await?;
+                let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
                 let mut buffer = Vec::new();
 
                 while let Some(chunk) = stream.next().await {
@@ -472,6 +472,17 @@ async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &m
             match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
                 Ok(location_data) => {
                     let run_race_data = generate_run_race_data(&location_data, &app.coordinates);
+                    
+                        // Debug printing with panic protection
+                        {
+                        const MAX_ITERATIONS: usize = 1;
+                        for (i, data) in run_race_data.iter().enumerate() {
+                            if i >= MAX_ITERATIONS {
+                                panic!("Too many iterations!");
+                            }
+                            println!("{:?}", data);
+                        }}
+                    
                     app.update_with_data(run_race_data);
                     buffer.drain(..=end_pos+1); // Remove the processed data from the buffer
                 },
@@ -488,6 +499,9 @@ async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &m
 
     Ok(())
 }
+
+
+
 
 fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
 where
