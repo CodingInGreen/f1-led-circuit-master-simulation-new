@@ -155,55 +155,57 @@ impl PlotApp {
         self.run_race_data.sort_by_key(|d| std::cmp::Reverse(d.date));
     }
 
-    async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
-        let driver_numbers = vec![
-            1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
-        ];
 
-        let mut handles = Vec::new();
 
-        for driver_number in driver_numbers {
-            let url = format!(
-                "https://api.openf1.org/v1/location?session_key={}&driver_number={}&limit=250",
-                "9149", driver_number
-            );            
+   async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
+    let driver_numbers = vec![
+        1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
+    ];
 
-            let mut app_clone = self.clone();
-            handles.push(tokio::spawn(async move {
-                //println!("Starting to stream data for driver number {}", driver_number);
+    let mut handles = Vec::new();
 
-                let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
-                let mut buffer = Vec::new();
+    for driver_number in driver_numbers {
+        let url = format!(
+            "https://api.openf1.org/v1/location?session_key={}&driver_number={}&limit=250",
+            "9149", driver_number
+        );
 
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk?;
-                    println!("Received a chunk of data for driver number {}", driver_number);
-                    process_and_visualize_chunk(&mut app_clone, chunk, &mut buffer).await?;
-                }
+        let mut app_clone = self.clone();
+        handles.push(tokio::spawn(async move {
+            let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
+            let mut buffer = Vec::new();
 
-                Ok::<(), Box<dyn StdError + Send + Sync>>(())
-            }));
-        }
-
-        // Await all tasks concurrently using `tokio::join!`
-        let results = futures::future::join_all(handles).await;
-
-        // Handle any errors
-        for result in results {
-            if let Err(e) = result {
-                eprintln!("Error fetching data: {:?}", e);
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                println!("Received a chunk of data for driver number {}", driver_number);
+                let run_race_data = process_chunk(chunk, &mut buffer, &app_clone.coordinates).await?;
+                visualize_data(&mut app_clone, run_race_data).await;
             }
-        }
 
-        println!("Finished streaming data for all drivers");
-        self.data_loaded = true; // Set the flag to true
-
-        if let Some(sender) = &self.completion_sender {
-            let _ = sender.send(()).await;
-        }
-
-        Ok(())
+            Ok::<(), Box<dyn StdError + Send + Sync>>(())
+        }));
     }
+
+    // Await all tasks concurrently using `tokio::join!`
+    let results = futures::future::join_all(handles).await;
+
+    // Handle any errors
+    for result in results {
+        if let Err(e) = result {
+            eprintln!("Error fetching data: {:?}", e);
+        }
+    }
+
+    println!("Finished streaming data for all drivers");
+    self.data_loaded = true; // Set the flag to true
+
+    if let Some(sender) = &self.completion_sender {
+        let _ = sender.send(()).await;
+    }
+
+    Ok(())
+}
+
 }
 
 impl App for PlotApp {
@@ -452,6 +454,7 @@ async fn fetch_data_in_chunks(url: &str, _chunk_size: usize) -> Result<impl futu
     Ok(stream)
 }
 
+
 async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &mut Vec<u8>) -> Result<(), Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
     println!("Processing a new chunk of data...");
@@ -500,6 +503,63 @@ async fn process_and_visualize_chunk(app: &mut PlotApp, chunk: Bytes, buffer: &m
     Ok(())
 }
 
+
+
+async fn process_chunk(chunk: Bytes, buffer: &mut Vec<u8>, coordinates: &[LedCoordinate]) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
+    buffer.extend_from_slice(&chunk);
+    println!("Processing a new chunk of data...");
+    println!("Current buffer content size: {}", buffer.len());
+
+    let mut run_race_data = Vec::new();
+
+    // Deserialize complete JSON objects from the buffer
+    while let Some(start_pos) = buffer.windows(2).position(|w| w == b"[{") {
+        if let Some(end_pos) = buffer.windows(2).position(|w| w == b"}]") {
+            let json_slice = &buffer[start_pos..=end_pos+1];
+            println!(
+                "Attempting to deserialize slice: {}",
+                match std::str::from_utf8(json_slice) {
+                    Ok(s) => s.to_string(),
+                    Err(e) => format!("Error: {:?}", e),
+                }
+            );
+
+            match serde_json::from_slice::<Vec<LocationData>>(json_slice) {
+                Ok(location_data) => {
+                    let new_run_race_data = generate_run_race_data(&location_data, coordinates);
+                    
+                    // Debug printing with panic protection
+                    {
+                        const MAX_ITERATIONS: usize = 1;
+                        for (i, data) in new_run_race_data.iter().enumerate() {
+                            if i >= MAX_ITERATIONS {
+                                panic!("Too many iterations!");
+                            }
+                            println!("{:?}", data);
+                        }
+                    }
+                    
+                    run_race_data.extend(new_run_race_data);
+                    buffer.drain(..=end_pos+1); // Remove the processed data from the buffer
+                },
+                Err(e) => {
+                    println!("Failed to deserialize LocationData: {:?}", e);
+                    break; // Break the loop if we can't deserialize a complete object
+                }
+            }
+        } else {
+            // If end_pos is None, it means the buffer does not contain a complete JSON object yet
+            break;
+        }
+    }
+
+    Ok(run_race_data)
+}
+
+async fn visualize_data(app: &mut PlotApp, run_race_data: Vec<RunRace>) {
+    app.update_with_data(run_race_data);
+    app.update_led_states();
+}
 
 
 
