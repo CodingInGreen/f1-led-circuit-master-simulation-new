@@ -461,9 +461,9 @@ async fn fetch_data_in_chunks(url: &str, _chunk_size: usize) -> Result<impl futu
 
 
 async fn process_chunk(
-    chunk: Bytes, 
-    buffer: &mut Vec<u8>, 
-    coordinates: &[LedCoordinate], 
+    chunk: Bytes,
+    buffer: &mut Vec<u8>,
+    coordinates: &[LedCoordinate],
     max_rows: usize
 ) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
@@ -480,8 +480,13 @@ async fn process_chunk(
     // Process the buffer string to find complete JSON objects
     while let Some(end_pos) = buffer_str[start_pos..].find("},{") {
         // Extract the JSON object slice and remove brackets
-        let json_slice = &buffer_str[start_pos..start_pos + end_pos + 1];
-        let json_slice = json_slice.trim_start_matches('[').trim_end_matches(']');
+        let mut json_slice = &buffer_str[start_pos..start_pos + end_pos + 1];
+        json_slice = json_slice.trim_start_matches('[').trim_end_matches(']');
+
+        // Ensure the slice starts with '{'
+        if !json_slice.starts_with('{') {
+            json_slice = &buffer_str[start_pos - 1..start_pos + end_pos + 1];
+        }
 
         println!("Attempting to deserialize slice: {}", json_slice);
 
@@ -498,7 +503,7 @@ async fn process_chunk(
                     println!("Reached max rows limit: {}", max_rows);
                     break;
                 }
-            },
+            }
             Err(e) => {
                 println!("Failed to deserialize LocationData: {:?}", e);
                 break; // Break the loop if we can't deserialize a complete object
@@ -518,6 +523,9 @@ async fn process_chunk(
 
     Ok(run_race_data)
 }
+
+
+
 
 
 
