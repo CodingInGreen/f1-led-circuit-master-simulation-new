@@ -480,17 +480,26 @@ async fn process_chunk(
     // Process the buffer string to find complete JSON objects
     while let Some(end_pos) = buffer_str[start_pos..].find("},{") {
         // Extract the JSON object slice and remove brackets
-        let mut json_slice = &buffer_str[start_pos..start_pos + end_pos + 1];
-        json_slice = json_slice.trim_start_matches('[').trim_end_matches(']');
+        let json_slice = &buffer_str[start_pos..start_pos + end_pos + 1];
+        let json_slice = json_slice.trim_start_matches('[').trim_end_matches(']');
 
         // Ensure the slice starts with '{'
-        if !json_slice.starts_with('{') {
-            json_slice = &buffer_str[start_pos - 1..start_pos + end_pos + 1];
-        }
+        let json_slice = if !json_slice.starts_with('{') {
+            if start_pos > 0 {
+                buffer_str[start_pos - 1..start_pos + end_pos + 1].to_string()
+            } else {
+                // Prepend '{' if start_pos is 0 and it doesn't start with '{'
+                let mut json_str = String::from("{");
+                json_str.push_str(json_slice);
+                json_str
+            }
+        } else {
+            json_slice.to_string()
+        };
 
         println!("Attempting to deserialize slice: {}", json_slice);
 
-        match serde_json::from_str::<LocationData>(json_slice) {
+        match serde_json::from_str::<LocationData>(&json_slice) {
             Ok(location_data) => {
                 println!("Deserialized JSON data: {:?}", location_data);
 
@@ -523,6 +532,7 @@ async fn process_chunk(
 
     Ok(run_race_data)
 }
+
 
 
 
