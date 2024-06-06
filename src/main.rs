@@ -121,6 +121,8 @@ impl PlotApp {
 
     fn update_led_states(&mut self) {
         self.led_states.clear();
+        
+        println!("Updating LED states...");
     
         for run_data in &self.run_race_data[..self.current_index] {
             let coord_key = (
@@ -129,10 +131,12 @@ impl PlotApp {
             );
     
             // Update the last known position of the driver
-            self.last_positions
-                .insert(run_data.driver_number, coord_key);
+            self.last_positions.insert(run_data.driver_number, coord_key);
         }
-    
+        
+        // Debug print for last positions
+        println!("Last positions: {:?}", self.last_positions);
+        
         // Update the LED states for all known positions
         for (&driver_number, &position) in &self.last_positions {
             let color = self
@@ -140,10 +144,25 @@ impl PlotApp {
                 .iter()
                 .find(|&driver| driver.number == driver_number)
                 .map_or(egui::Color32::WHITE, |driver| driver.color);
+    
             // Print LED positions and corresponding colors
             println!("LED position: {:?}, Color: {:?}", position, color);
+    
             self.led_states.insert(position, color);
         }
+    
+        // Debug print for LED states
+        println!("LED states: {:?}", self.led_states);
+    }
+    
+    async fn visualize_data(app: &mut PlotApp, run_race_data: Vec<RunRace>) {
+        println!("Visualizing data...");
+        app.update_with_data(run_race_data);
+    
+        // Debug print for run_race_data
+        println!("Run race data: {:?}", app.run_race_data);
+    
+        app.update_led_states();
     }
 
     fn scale_f64(value: f64, scale: i64) -> i64 {
