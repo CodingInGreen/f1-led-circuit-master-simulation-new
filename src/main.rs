@@ -102,6 +102,15 @@ impl PlotApp {
             let elapsed = self.start_time.elapsed().as_secs_f64();
             self.race_time = elapsed * self.speed as f64;
 
+            //if self.run_race_data.is_empty() {
+            //    println!("run_race_data is empty!");
+            //}
+
+            // Correctly iterate over run_race_data and print x_led and y_led fields
+            //for run_data in &self.run_race_data {
+            //    println!("x_led: {}, y_led: {}", run_data.x_led, run_data.y_led);
+            //}
+
             let mut next_index = self.current_index;
             while next_index < self.run_race_data.len() {
                 let run_data = &self.run_race_data[next_index];
@@ -115,9 +124,8 @@ impl PlotApp {
 
             if next_index != self.current_index {
                 self.current_index = next_index;
-                //println!("Current index updated to: {}", self.current_index);
                 let run_race_data_slice = self.run_race_data[..self.current_index].to_vec();
-                self.update_led_states(&run_race_data_slice); // Pass the cloned slice directly
+                self.update_led_states(&run_race_data_slice);
             }
         }
     }
@@ -148,16 +156,9 @@ impl PlotApp {
         }
     }
 
-    async fn visualize_data(&mut self, run_race_data: Vec<RunRace>) {
+    async fn visualize_data(&mut self) {
         println!("Visualizing data...");
-        self.update_with_data(run_race_data.clone());
-    
-        // Print out x_led and y_led values for the run_race_data
-        //for data in &self.run_race_data {
-        //    println!("date: {}, driver_number: {}, x_led: {}, y_led: {}", data.date, data.driver_number, data.x_led, data.y_led);
-        //}
-    
-        self.update_led_states(&run_race_data);
+        self.update_race();
     }
 
     fn scale_f64(value: f64, scale: i64) -> i64 {
@@ -167,9 +168,6 @@ impl PlotApp {
     fn update_with_data(&mut self, data: Vec<RunRace>) {
         self.run_race_data.extend(data);
         self.run_race_data.sort_by_key(|d| d.date);
-
-        // Debug print for sorted run_race_data
-        //println!("Sorted run race data: {:?}", self.run_race_data);
     }
 
     async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
@@ -177,48 +175,49 @@ impl PlotApp {
         let driver_numbers = vec![
             1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
         ];
-    
+
         let mut handles = Vec::new();
-        let max_rows_per_driver = 500;
-    
+        let max_rows_per_driver = 10;
+
         for driver_number in driver_numbers {
             let url = format!(
                 "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
                 "9149", driver_number
             );
-    
+
             let mut app_clone = self.clone();
             let sender_clone = self.completion_sender.clone().unwrap();
             handles.push(tokio::spawn(async move {
                 let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
                 let mut buffer = Vec::new();
-    
+
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk?;
                     println!("Received a chunk of data for driver number {}", driver_number);
                     let run_race_data = process_chunk(chunk, &mut buffer, &app_clone.coordinates, max_rows_per_driver, &sender_clone).await?;
-                    app_clone.visualize_data(run_race_data).await;  // Call visualize_data directly
-    
+                    app_clone.update_with_data(run_race_data.clone()); // Update with the new data
+                    app_clone.visualize_data().await;  // Visualize the updated data
+
                     if buffer.len() >= max_rows_per_driver {
                         break;
                     }
                 }
-    
+
                 Ok::<(), Box<dyn StdError + Send + Sync>>(())
             }));
         }
-    
+
         let results = futures::future::join_all(handles).await;
-    
+
         for result in results {
             if let Err(e) = result {
                 eprintln!("Error fetching data: {:?}", e);
             }
         }
-    
+
         println!("Finished streaming data for all drivers");
         self.data_loaded = true; // Set the flag to true
-    
+
         if let Some(sender) = &self.completion_sender {
             println!("Sending final completion message...");
             let _ = sender.send(()).await;
@@ -226,14 +225,18 @@ impl PlotApp {
         } else {
             println!("Sender is None.");
         }
-    
+
         Ok(())
     }
 }
 
 impl App for PlotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        self.update_race();
+        let ctx_clone = ctx.clone();
+        tokio::spawn(async move {
+            ctx_clone.request_repaint();
+        });
+        self.visualize_data();
 
         // Poll the channel for completion messages
         if let Some(receiver) = self.completion_receiver.as_ref() {
@@ -492,8 +495,6 @@ async fn process_chunk(
     sender: &async_channel::Sender<()>
 ) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
-    //println!("Processing a new chunk of data...");
-    //println!("Current buffer content size: {}", buffer.len());
 
     let mut run_race_data = Vec::new();
     let mut rows_processed = 0;
@@ -522,12 +523,8 @@ async fn process_chunk(
             json_slice.to_string()
         };
 
-        //println!("Attempting to deserialize slice: {}", json_slice);
-
         match serde_json::from_str::<LocationData>(&json_slice) {
             Ok(location_data) => {
-                //println!("Deserialized JSON data: {:?}", location_data);
-
                 let new_run_race_data = generate_run_race_data(&[location_data], coordinates);
 
                 rows_processed += new_run_race_data.len();
