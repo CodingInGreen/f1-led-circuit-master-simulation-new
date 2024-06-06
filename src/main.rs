@@ -101,7 +101,7 @@ impl PlotApp {
         if self.race_started {
             let elapsed = self.start_time.elapsed().as_secs_f64();
             self.race_time = elapsed * self.speed as f64;
-    
+
             let mut next_index = self.current_index;
             while next_index < self.run_race_data.len() {
                 let run_data = &self.run_race_data[next_index];
@@ -112,10 +112,10 @@ impl PlotApp {
                     break;
                 }
             }
-    
+
             if next_index != self.current_index {
                 self.current_index = next_index;
-                println!("Current index updated to: {}", self.current_index);
+                //println!("Current index updated to: {}", self.current_index);
                 let run_race_data_slice = self.run_race_data[..self.current_index].to_vec();
                 self.update_led_states(&run_race_data_slice); // Pass the cloned slice directly
             }
@@ -125,19 +125,19 @@ impl PlotApp {
     fn update_led_states(&mut self, run_race_data: &[RunRace]) {
         println!("Updating LED states for {} entries", run_race_data.len());
         self.led_states.clear();
-    
+
         for run_data in run_race_data.iter() {
             let coord_key = (
                 PlotApp::scale_f64(run_data.x_led, 1_000_000),
                 PlotApp::scale_f64(run_data.y_led, 1_000_000),
             );
-    
+
             // Update the last known position of the driver
             self.last_positions.insert(run_data.driver_number, coord_key);
             // Print out the last known positions of the drivers
             println!("Updated last_positions: {:?}", self.last_positions);
         }
-    
+
         // Print final state of LED positions
         for (&driver_number, &position) in &self.last_positions {
             let color = self.driver_info.iter()
@@ -173,6 +173,7 @@ impl PlotApp {
     }
 
     async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
+        println!("Starting to load data...");
         let driver_numbers = vec![
             1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
         ];
@@ -206,10 +207,8 @@ impl PlotApp {
             }));
         }
     
-        // Await all tasks concurrently using `tokio::join!`
         let results = futures::future::join_all(handles).await;
     
-        // Handle any errors
         for result in results {
             if let Err(e) = result {
                 eprintln!("Error fetching data: {:?}", e);
@@ -220,7 +219,11 @@ impl PlotApp {
         self.data_loaded = true; // Set the flag to true
     
         if let Some(sender) = &self.completion_sender {
+            println!("Sending completion message...");
             let _ = sender.send(()).await;
+            println!("Completion message sent.");
+        } else {
+            println!("Sender is None.");
         }
     
         Ok(())
@@ -233,9 +236,17 @@ impl App for PlotApp {
 
         // Poll the channel for completion messages
         if let Some(receiver) = self.completion_receiver.as_ref() {
-            if let Ok(()) = receiver.try_recv() {
-                ctx.request_repaint(); // Force repaint after data is loaded
+            match receiver.try_recv() {
+                Ok(()) => {
+                    println!("Received completion message!");
+                    ctx.request_repaint(); // Force repaint after data is loaded
+                }
+                Err(e) => {
+                    println!("No message received yet or error occurred: {:?}", e);
+                }
             }
+        } else {
+            println!("Receiver is None.");
         }
 
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -266,14 +277,17 @@ impl App for PlotApp {
 
                 if ui.button("START").clicked() {
                     if !self.data_loading_started {
+                        println!("Start button clicked, beginning data loading...");
                         self.data_loading_started = true;
                         self.race_started = true;
                         self.start_time = Instant::now();
                         let mut app_clone = self.clone();
                         let sender = self.completion_sender.clone().unwrap();
                         tokio::spawn(async move {
+                            println!("Spawning data loading task...");
                             app_clone.load_data().await.unwrap();
                             let _ = sender.send(()).await; // Notify completion
+                            println!("Data loading task completed.");
                         });
                     }
                 }
@@ -481,8 +495,8 @@ async fn process_chunk(
     max_rows: usize
 ) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
-    println!("Processing a new chunk of data...");
-    println!("Current buffer content size: {}", buffer.len());
+    //println!("Processing a new chunk of data...");
+    //println!("Current buffer content size: {}", buffer.len());
 
     let mut run_race_data = Vec::new();
     let mut rows_processed = 0;
@@ -511,11 +525,11 @@ async fn process_chunk(
             json_slice.to_string()
         };
 
-        println!("Attempting to deserialize slice: {}", json_slice);
+        //println!("Attempting to deserialize slice: {}", json_slice);
 
         match serde_json::from_str::<LocationData>(&json_slice) {
             Ok(location_data) => {
-                println!("Deserialized JSON data: {:?}", location_data);
+                //println!("Deserialized JSON data: {:?}", location_data);
 
                 let new_run_race_data = generate_run_race_data(&[location_data], coordinates);
 
