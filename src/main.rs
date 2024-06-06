@@ -1,5 +1,7 @@
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use eframe::{egui, App, Frame};
+use futures_util::stream::StreamExt;
 use reqwest::Client;
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
@@ -8,8 +10,6 @@ use std::error::Error as StdError;
 use std::result::Result;
 use std::time::Instant;
 use tokio;
-use bytes::Bytes;
-use futures_util::stream::StreamExt;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LocationData {
@@ -64,10 +64,7 @@ struct PlotApp {
 }
 
 impl PlotApp {
-    fn new(
-        coordinates: Vec<LedCoordinate>,
-        driver_info: Vec<DriverInfo>,
-    ) -> PlotApp {
+    fn new(coordinates: Vec<LedCoordinate>, driver_info: Vec<DriverInfo>) -> PlotApp {
         let (completion_sender, completion_receiver) = async_channel::bounded(1);
 
         PlotApp {
@@ -114,7 +111,8 @@ impl PlotApp {
             let mut next_index = self.current_index;
             while next_index < self.run_race_data.len() {
                 let run_data = &self.run_race_data[next_index];
-                let race_data_time = (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
+                let race_data_time =
+                    (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
                 if race_data_time <= self.race_time {
                     next_index += 1;
                 } else {
@@ -141,24 +139,29 @@ impl PlotApp {
             );
 
             // Update the last known position of the driver
-            self.last_positions.insert(run_data.driver_number, coord_key);
+            self.last_positions
+                .insert(run_data.driver_number, coord_key);
             // Print out the last known positions of the drivers
             println!("Updated last_positions: {:?}", self.last_positions);
         }
 
         // Print final state of LED positions
         for (&driver_number, &position) in &self.last_positions {
-            let color = self.driver_info.iter()
+            let color = self
+                .driver_info
+                .iter()
                 .find(|&driver| driver.number == driver_number)
                 .map_or(egui::Color32::WHITE, |driver| driver.color);
             println!("LED position: {:?}, Color: {:?}", position, color);
             self.led_states.insert(position, color);
-        }
-    }
 
-    async fn visualize_data(&mut self) {
-        println!("Visualizing data...");
-        self.update_race();
+            // Iterate through led_states to confirm that there is data
+            if self.led_states.is_empty() {
+                println!("update_led_states -- LED STATES EMPTY!");
+            } else {
+                println!("update_led_states -- LED STATES FULL!");
+            }
+        }
     }
 
     fn scale_f64(value: f64, scale: i64) -> i64 {
@@ -193,10 +196,20 @@ impl PlotApp {
 
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk?;
-                    println!("Received a chunk of data for driver number {}", driver_number);
-                    let run_race_data = process_chunk(chunk, &mut buffer, &app_clone.coordinates, max_rows_per_driver, &sender_clone).await?;
+                    println!(
+                        "Received a chunk of data for driver number {}",
+                        driver_number
+                    );
+                    let run_race_data = process_chunk(
+                        chunk,
+                        &mut buffer,
+                        &app_clone.coordinates,
+                        max_rows_per_driver,
+                        &sender_clone,
+                    )
+                    .await?;
                     app_clone.update_with_data(run_race_data.clone()); // Update with the new data
-                    app_clone.visualize_data().await;  // Visualize the updated data
+                    app_clone.update_race(); // Visualize the updated data
 
                     if buffer.len() >= max_rows_per_driver {
                         break;
@@ -236,7 +249,7 @@ impl App for PlotApp {
         tokio::spawn(async move {
             ctx_clone.request_repaint();
         });
-        self.visualize_data();
+        self.update_race();
 
         // Poll the channel for completion messages
         if let Some(receiver) = self.completion_receiver.as_ref() {
@@ -253,12 +266,18 @@ impl App for PlotApp {
             egui::Id::new("layer"),
         ));
 
-        let (min_x, max_x) = self.coordinates.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
-            (min.min(coord.x_led), max.max(coord.x_led))
-        });
-        let (min_y, max_y) = self.coordinates.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
-            (min.min(coord.y_led), max.max(coord.y_led))
-        });
+        let (min_x, max_x) = self
+            .coordinates
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
+                (min.min(coord.x_led), max.max(coord.x_led))
+            });
+        let (min_y, max_y) = self
+            .coordinates
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
+                (min.min(coord.y_led), max.max(coord.y_led))
+            });
 
         let width = max_x - min_x;
         let height = max_y - min_y;
@@ -303,11 +322,18 @@ impl App for PlotApp {
         egui::SidePanel::right("legend_panel").show(ctx, |ui| {
             ui.vertical(|ui| {
                 let style = ui.style_mut();
-                style.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 8.0;
+                style
+                    .text_styles
+                    .get_mut(&egui::TextStyle::Body)
+                    .unwrap()
+                    .size = 8.0;
 
                 for driver in &self.driver_info {
                     ui.horizontal(|ui| {
-                        ui.label(format!("{}: {} ({})", driver.number, driver.name, driver.team));
+                        ui.label(format!(
+                            "{}: {} ({})",
+                            driver.number, driver.name, driver.team
+                        ));
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(ui.cursor().min, egui::vec2(5.0, 5.0)),
                             0.0,
@@ -322,25 +348,46 @@ impl App for PlotApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             for coord in &self.coordinates {
                 let norm_x = ((coord.x_led - min_x) / width) as f32 * (ui.available_width() - 60.0);
-                let norm_y = (ui.available_height() - 60.0) - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0));
+                let norm_y = (ui.available_height() - 60.0)
+                    - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0));
 
                 painter.rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(norm_x + 30.0, norm_y + 30.0), egui::vec2(20.0, 20.0)),
+                    egui::Rect::from_min_size(
+                        egui::pos2(norm_x + 30.0, norm_y + 30.0),
+                        egui::vec2(20.0, 20.0),
+                    ),
                     egui::Rounding::same(0.0),
                     egui::Color32::BLACK,
                 );
             }
 
-            for ((x, y), color) in &self.led_states {
-                let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32 * (ui.available_width() - 60.0);
-                let norm_y = (ui.available_height() - 60.0) - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32 * (ui.available_height() - 60.0));
+           
+            /* 
+                if self.led_states.is_empty() {
+                    println!("egui -- LED STATES EMPTY!");
+                } else {
+                    println!("egui -- LED STATES FULL!");
+                }
+            */
 
-                painter.rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(norm_x + 30.0, norm_y + 30.0), egui::vec2(20.0, 20.0)),
-                    egui::Rounding::same(0.0),
-                    *color,
-                );
-            }
+                for ((x, y), color) in &self.led_states {
+                    let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32
+                        * (ui.available_width() - 60.0);
+                    let norm_y = (ui.available_height() - 60.0)
+                        - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32
+                            * (ui.available_height() - 60.0));
+
+                    println!("paint x: {}, paint y: {}", x, y);
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(norm_x + 30.0, norm_y + 30.0),
+                            egui::vec2(20.0, 20.0),
+                        ),
+                        egui::Rounding::same(0.0),
+                        *color,
+                    );
+                }
+            
         });
 
         ctx.request_repaint();
@@ -349,102 +396,390 @@ impl App for PlotApp {
 
 fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
     Ok(vec![
-        LedCoordinate { x_led: 6413.0, y_led: 33.0 },
-        LedCoordinate { x_led: 6007.0, y_led: 197.0 },
-        LedCoordinate { x_led: 5652.0, y_led: 444.0 },
-        LedCoordinate { x_led: 5431.0, y_led: 822.0 },
-        LedCoordinate { x_led: 5727.0, y_led: 1143.0 },
-        LedCoordinate { x_led: 6141.0, y_led: 1268.0 },
-        LedCoordinate { x_led: 6567.0, y_led: 1355.0 },
-        LedCoordinate { x_led: 6975.0, y_led: 1482.0 },
-        LedCoordinate { x_led: 7328.0, y_led: 1738.0 },
-        LedCoordinate { x_led: 7369.0, y_led: 2173.0 },
-        LedCoordinate { x_led: 7024.0, y_led: 2448.0 },
-        LedCoordinate { x_led: 6592.0, y_led: 2505.0 },
-        LedCoordinate { x_led: 6159.0, y_led: 2530.0 },
-        LedCoordinate { x_led: 5725.0, y_led: 2525.0 },
-        LedCoordinate { x_led: 5288.0, y_led: 2489.0 },
-        LedCoordinate { x_led: 4857.0, y_led: 2434.0 },
-        LedCoordinate { x_led: 4429.0, y_led: 2356.0 },
-        LedCoordinate { x_led: 4004.0, y_led: 2249.0 },
-        LedCoordinate { x_led: 3592.0, y_led: 2122.0 },
-        LedCoordinate { x_led: 3181.0, y_led: 1977.0 },
-        LedCoordinate { x_led: 2779.0, y_led: 1812.0 },
-        LedCoordinate { x_led: 2387.0, y_led: 1624.0 },
-        LedCoordinate { x_led: 1988.0, y_led: 1453.0 },
-        LedCoordinate { x_led: 1703.0, y_led: 1779.0 },
-        LedCoordinate { x_led: 1271.0, y_led: 1738.0 },
-        LedCoordinate { x_led: 1189.0, y_led: 1314.0 },
-        LedCoordinate { x_led: 1257.0, y_led: 884.0 },
-        LedCoordinate { x_led: 1333.0, y_led: 454.0 },
-        LedCoordinate { x_led: 1409.0, y_led: 25.0 },
-        LedCoordinate { x_led: 1485.0, y_led: -405.0 },
-        LedCoordinate { x_led: 1558.0, y_led: -835.0 },
-        LedCoordinate { x_led: 1537.0, y_led: -1267.0 },
-        LedCoordinate { x_led: 1208.0, y_led: -1555.0 },
-        LedCoordinate { x_led: 779.0, y_led: -1606.0 },
-        LedCoordinate { x_led: 344.0, y_led: -1604.0 },
-        LedCoordinate { x_led: -88.0, y_led: -1539.0 },
-        LedCoordinate { x_led: -482.0, y_led: -1346.0 },
-        LedCoordinate { x_led: -785.0, y_led: -1038.0 },
-        LedCoordinate { x_led: -966.0, y_led: -644.0 },
-        LedCoordinate { x_led: -1015.0, y_led: -206.0 },
-        LedCoordinate { x_led: -923.0, y_led: 231.0 },
-        LedCoordinate { x_led: -762.0, y_led: 650.0 },
-        LedCoordinate { x_led: -591.0, y_led: 1078.0 },
-        LedCoordinate { x_led: -423.0, y_led: 1497.0 },
-        LedCoordinate { x_led: -254.0, y_led: 1915.0 },
-        LedCoordinate { x_led: -86.0, y_led: 2329.0 },
-        LedCoordinate { x_led: 83.0, y_led: 2744.0 },
-        LedCoordinate { x_led: 251.0, y_led: 3158.0 },
-        LedCoordinate { x_led: 416.0, y_led: 3574.0 },
-        LedCoordinate { x_led: 588.0, y_led: 3990.0 },
-        LedCoordinate { x_led: 755.0, y_led: 4396.0 },
-        LedCoordinate { x_led: 920.0, y_led: 4804.0 },
-        LedCoordinate { x_led: 1086.0, y_led: 5212.0 },
-        LedCoordinate { x_led: 1250.0, y_led: 5615.0 },
-        LedCoordinate { x_led: 1418.0, y_led: 6017.0 },
-        LedCoordinate { x_led: 1583.0, y_led: 6419.0 },
-        LedCoordinate { x_led: 1909.0, y_led: 6702.0 },
-        LedCoordinate { x_led: 2306.0, y_led: 6512.0 },
-        LedCoordinate { x_led: 2319.0, y_led: 6071.0 },
-        LedCoordinate { x_led: 2152.0, y_led: 5660.0 },
-        LedCoordinate { x_led: 1988.0, y_led: 5255.0 },
-        LedCoordinate { x_led: 1853.0, y_led: 4836.0 },
-        LedCoordinate { x_led: 1784.0, y_led: 4407.0 },
-        LedCoordinate { x_led: 1779.0, y_led: 3971.0 },
-        LedCoordinate { x_led: 1605.0, y_led: 3569.0 },
-        LedCoordinate { x_led: 1211.0, y_led: 3375.0 },
-        LedCoordinate { x_led: 811.0, y_led: 3188.0 },
-        LedCoordinate { x_led: 710.0, y_led: 2755.0 },
-        LedCoordinate { x_led: 1116.0, y_led: 2595.0 },
-        LedCoordinate { x_led: 1529.0, y_led: 2717.0 },
-        LedCoordinate { x_led: 1947.0, y_led: 2848.0 },
-        LedCoordinate { x_led: 2371.0, y_led: 2946.0 },
-        LedCoordinate { x_led: 2806.0, y_led: 2989.0 },
-        LedCoordinate { x_led: 3239.0, y_led: 2946.0 },
-        LedCoordinate { x_led: 3665.0, y_led: 2864.0 },
-        LedCoordinate { x_led: 4092.0, y_led: 2791.0 },
-        LedCoordinate { x_led: 4523.0, y_led: 2772.0 },
-        LedCoordinate { x_led: 4945.0, y_led: 2886.0 },
-        LedCoordinate { x_led: 5331.0, y_led: 3087.0 },
-        LedCoordinate { x_led: 5703.0, y_led: 3315.0 },
-        LedCoordinate { x_led: 6105.0, y_led: 3484.0 },
-        LedCoordinate { x_led: 6538.0, y_led: 3545.0 },
-        LedCoordinate { x_led: 6969.0, y_led: 3536.0 },
-        LedCoordinate { x_led: 7402.0, y_led: 3511.0 },
-        LedCoordinate { x_led: 7831.0, y_led: 3476.0 },
-        LedCoordinate { x_led: 8241.0, y_led: 3335.0 },
-        LedCoordinate { x_led: 8549.0, y_led: 3025.0 },
-        LedCoordinate { x_led: 8703.0, y_led: 2612.0 },
-        LedCoordinate { x_led: 8662.0, y_led: 2173.0 },
-        LedCoordinate { x_led: 8451.0, y_led: 1785.0 },
-        LedCoordinate { x_led: 8203.0, y_led: 1426.0 },
-        LedCoordinate { x_led: 7973.0, y_led: 1053.0 },
-        LedCoordinate { x_led: 7777.0, y_led: 664.0 },
-        LedCoordinate { x_led: 7581.0, y_led: 275.0 },
-        LedCoordinate { x_led: 7274.0, y_led: -35.0 },
-        LedCoordinate { x_led: 6839.0, y_led: -46.0 },
+        LedCoordinate {
+            x_led: 6413.0,
+            y_led: 33.0,
+        },
+        LedCoordinate {
+            x_led: 6007.0,
+            y_led: 197.0,
+        },
+        LedCoordinate {
+            x_led: 5652.0,
+            y_led: 444.0,
+        },
+        LedCoordinate {
+            x_led: 5431.0,
+            y_led: 822.0,
+        },
+        LedCoordinate {
+            x_led: 5727.0,
+            y_led: 1143.0,
+        },
+        LedCoordinate {
+            x_led: 6141.0,
+            y_led: 1268.0,
+        },
+        LedCoordinate {
+            x_led: 6567.0,
+            y_led: 1355.0,
+        },
+        LedCoordinate {
+            x_led: 6975.0,
+            y_led: 1482.0,
+        },
+        LedCoordinate {
+            x_led: 7328.0,
+            y_led: 1738.0,
+        },
+        LedCoordinate {
+            x_led: 7369.0,
+            y_led: 2173.0,
+        },
+        LedCoordinate {
+            x_led: 7024.0,
+            y_led: 2448.0,
+        },
+        LedCoordinate {
+            x_led: 6592.0,
+            y_led: 2505.0,
+        },
+        LedCoordinate {
+            x_led: 6159.0,
+            y_led: 2530.0,
+        },
+        LedCoordinate {
+            x_led: 5725.0,
+            y_led: 2525.0,
+        },
+        LedCoordinate {
+            x_led: 5288.0,
+            y_led: 2489.0,
+        },
+        LedCoordinate {
+            x_led: 4857.0,
+            y_led: 2434.0,
+        },
+        LedCoordinate {
+            x_led: 4429.0,
+            y_led: 2356.0,
+        },
+        LedCoordinate {
+            x_led: 4004.0,
+            y_led: 2249.0,
+        },
+        LedCoordinate {
+            x_led: 3592.0,
+            y_led: 2122.0,
+        },
+        LedCoordinate {
+            x_led: 3181.0,
+            y_led: 1977.0,
+        },
+        LedCoordinate {
+            x_led: 2779.0,
+            y_led: 1812.0,
+        },
+        LedCoordinate {
+            x_led: 2387.0,
+            y_led: 1624.0,
+        },
+        LedCoordinate {
+            x_led: 1988.0,
+            y_led: 1453.0,
+        },
+        LedCoordinate {
+            x_led: 1703.0,
+            y_led: 1779.0,
+        },
+        LedCoordinate {
+            x_led: 1271.0,
+            y_led: 1738.0,
+        },
+        LedCoordinate {
+            x_led: 1189.0,
+            y_led: 1314.0,
+        },
+        LedCoordinate {
+            x_led: 1257.0,
+            y_led: 884.0,
+        },
+        LedCoordinate {
+            x_led: 1333.0,
+            y_led: 454.0,
+        },
+        LedCoordinate {
+            x_led: 1409.0,
+            y_led: 25.0,
+        },
+        LedCoordinate {
+            x_led: 1485.0,
+            y_led: -405.0,
+        },
+        LedCoordinate {
+            x_led: 1558.0,
+            y_led: -835.0,
+        },
+        LedCoordinate {
+            x_led: 1537.0,
+            y_led: -1267.0,
+        },
+        LedCoordinate {
+            x_led: 1208.0,
+            y_led: -1555.0,
+        },
+        LedCoordinate {
+            x_led: 779.0,
+            y_led: -1606.0,
+        },
+        LedCoordinate {
+            x_led: 344.0,
+            y_led: -1604.0,
+        },
+        LedCoordinate {
+            x_led: -88.0,
+            y_led: -1539.0,
+        },
+        LedCoordinate {
+            x_led: -482.0,
+            y_led: -1346.0,
+        },
+        LedCoordinate {
+            x_led: -785.0,
+            y_led: -1038.0,
+        },
+        LedCoordinate {
+            x_led: -966.0,
+            y_led: -644.0,
+        },
+        LedCoordinate {
+            x_led: -1015.0,
+            y_led: -206.0,
+        },
+        LedCoordinate {
+            x_led: -923.0,
+            y_led: 231.0,
+        },
+        LedCoordinate {
+            x_led: -762.0,
+            y_led: 650.0,
+        },
+        LedCoordinate {
+            x_led: -591.0,
+            y_led: 1078.0,
+        },
+        LedCoordinate {
+            x_led: -423.0,
+            y_led: 1497.0,
+        },
+        LedCoordinate {
+            x_led: -254.0,
+            y_led: 1915.0,
+        },
+        LedCoordinate {
+            x_led: -86.0,
+            y_led: 2329.0,
+        },
+        LedCoordinate {
+            x_led: 83.0,
+            y_led: 2744.0,
+        },
+        LedCoordinate {
+            x_led: 251.0,
+            y_led: 3158.0,
+        },
+        LedCoordinate {
+            x_led: 416.0,
+            y_led: 3574.0,
+        },
+        LedCoordinate {
+            x_led: 588.0,
+            y_led: 3990.0,
+        },
+        LedCoordinate {
+            x_led: 755.0,
+            y_led: 4396.0,
+        },
+        LedCoordinate {
+            x_led: 920.0,
+            y_led: 4804.0,
+        },
+        LedCoordinate {
+            x_led: 1086.0,
+            y_led: 5212.0,
+        },
+        LedCoordinate {
+            x_led: 1250.0,
+            y_led: 5615.0,
+        },
+        LedCoordinate {
+            x_led: 1418.0,
+            y_led: 6017.0,
+        },
+        LedCoordinate {
+            x_led: 1583.0,
+            y_led: 6419.0,
+        },
+        LedCoordinate {
+            x_led: 1909.0,
+            y_led: 6702.0,
+        },
+        LedCoordinate {
+            x_led: 2306.0,
+            y_led: 6512.0,
+        },
+        LedCoordinate {
+            x_led: 2319.0,
+            y_led: 6071.0,
+        },
+        LedCoordinate {
+            x_led: 2152.0,
+            y_led: 5660.0,
+        },
+        LedCoordinate {
+            x_led: 1988.0,
+            y_led: 5255.0,
+        },
+        LedCoordinate {
+            x_led: 1853.0,
+            y_led: 4836.0,
+        },
+        LedCoordinate {
+            x_led: 1784.0,
+            y_led: 4407.0,
+        },
+        LedCoordinate {
+            x_led: 1779.0,
+            y_led: 3971.0,
+        },
+        LedCoordinate {
+            x_led: 1605.0,
+            y_led: 3569.0,
+        },
+        LedCoordinate {
+            x_led: 1211.0,
+            y_led: 3375.0,
+        },
+        LedCoordinate {
+            x_led: 811.0,
+            y_led: 3188.0,
+        },
+        LedCoordinate {
+            x_led: 710.0,
+            y_led: 2755.0,
+        },
+        LedCoordinate {
+            x_led: 1116.0,
+            y_led: 2595.0,
+        },
+        LedCoordinate {
+            x_led: 1529.0,
+            y_led: 2717.0,
+        },
+        LedCoordinate {
+            x_led: 1947.0,
+            y_led: 2848.0,
+        },
+        LedCoordinate {
+            x_led: 2371.0,
+            y_led: 2946.0,
+        },
+        LedCoordinate {
+            x_led: 2806.0,
+            y_led: 2989.0,
+        },
+        LedCoordinate {
+            x_led: 3239.0,
+            y_led: 2946.0,
+        },
+        LedCoordinate {
+            x_led: 3665.0,
+            y_led: 2864.0,
+        },
+        LedCoordinate {
+            x_led: 4092.0,
+            y_led: 2791.0,
+        },
+        LedCoordinate {
+            x_led: 4523.0,
+            y_led: 2772.0,
+        },
+        LedCoordinate {
+            x_led: 4945.0,
+            y_led: 2886.0,
+        },
+        LedCoordinate {
+            x_led: 5331.0,
+            y_led: 3087.0,
+        },
+        LedCoordinate {
+            x_led: 5703.0,
+            y_led: 3315.0,
+        },
+        LedCoordinate {
+            x_led: 6105.0,
+            y_led: 3484.0,
+        },
+        LedCoordinate {
+            x_led: 6538.0,
+            y_led: 3545.0,
+        },
+        LedCoordinate {
+            x_led: 6969.0,
+            y_led: 3536.0,
+        },
+        LedCoordinate {
+            x_led: 7402.0,
+            y_led: 3511.0,
+        },
+        LedCoordinate {
+            x_led: 7831.0,
+            y_led: 3476.0,
+        },
+        LedCoordinate {
+            x_led: 8241.0,
+            y_led: 3335.0,
+        },
+        LedCoordinate {
+            x_led: 8549.0,
+            y_led: 3025.0,
+        },
+        LedCoordinate {
+            x_led: 8703.0,
+            y_led: 2612.0,
+        },
+        LedCoordinate {
+            x_led: 8662.0,
+            y_led: 2173.0,
+        },
+        LedCoordinate {
+            x_led: 8451.0,
+            y_led: 1785.0,
+        },
+        LedCoordinate {
+            x_led: 8203.0,
+            y_led: 1426.0,
+        },
+        LedCoordinate {
+            x_led: 7973.0,
+            y_led: 1053.0,
+        },
+        LedCoordinate {
+            x_led: 7777.0,
+            y_led: 664.0,
+        },
+        LedCoordinate {
+            x_led: 7581.0,
+            y_led: 275.0,
+        },
+        LedCoordinate {
+            x_led: 7274.0,
+            y_led: -35.0,
+        },
+        LedCoordinate {
+            x_led: 6839.0,
+            y_led: -46.0,
+        },
     ])
 }
 
@@ -479,20 +814,25 @@ fn generate_run_race_data(
         .collect()
 }
 
-async fn fetch_data_in_chunks(url: &str, _chunk_size: usize) -> Result<impl futures_util::stream::Stream<Item = Result<Bytes, reqwest::Error>>, Box<dyn StdError + Send + Sync>> {
+async fn fetch_data_in_chunks(
+    url: &str,
+    _chunk_size: usize,
+) -> Result<
+    impl futures_util::stream::Stream<Item = Result<Bytes, reqwest::Error>>,
+    Box<dyn StdError + Send + Sync>,
+> {
     let client = Client::new();
     let resp = client.get(url).send().await?.error_for_status()?;
     let stream = resp.bytes_stream();
     Ok(stream)
 }
 
-
 async fn process_chunk(
     chunk: Bytes,
     buffer: &mut Vec<u8>,
     coordinates: &[LedCoordinate],
     max_rows: usize,
-    sender: &async_channel::Sender<()>
+    sender: &async_channel::Sender<()>,
 ) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
 
@@ -573,32 +913,136 @@ async fn main() -> Result<(), Box<dyn StdError>> {
     let coordinates = read_coordinates()?;
 
     let driver_info = vec![
-        DriverInfo { number: 1, name: "Max Verstappen", team: "Red Bull", color: egui::Color32::from_rgb(30, 65, 255) },
-        DriverInfo { number: 2, name: "Logan Sargeant", team: "Williams", color: egui::Color32::from_rgb(0, 82, 255) },
-        DriverInfo { number: 4, name: "Lando Norris", team: "McLaren", color: egui::Color32::from_rgb(255, 135, 0) },
-        DriverInfo { number: 10, name: "Pierre Gasly", team: "Alpine", color: egui::Color32::from_rgb(2, 144, 240) },
-        DriverInfo { number: 11, name: "Sergio Perez", team: "Red Bull", color: egui::Color32::from_rgb(30, 65, 255) },
-        DriverInfo { number: 14, name: "Fernando Alonso", team: "Aston Martin", color: egui::Color32::from_rgb(0, 110, 120) },
-        DriverInfo { number: 16, name: "Charles Leclerc", team: "Ferrari", color: egui::Color32::from_rgb(220, 0, 0) },
-        DriverInfo { number: 18, name: "Lance Stroll", team: "Aston Martin", color: egui::Color32::from_rgb(0, 110, 120) },
-        DriverInfo { number: 20, name: "Kevin Magnussen", team: "Haas", color: egui::Color32::from_rgb(160, 207, 205) },
-        DriverInfo { number: 22, name: "Yuki Tsunoda", team: "AlphaTauri", color: egui::Color32::from_rgb(60, 130, 200) },
-        DriverInfo { number: 23, name: "Alex Albon", team: "Williams", color: egui::Color32::from_rgb(0, 82, 255) },
-        DriverInfo { number: 24, name: "Zhou Guanyu", team: "Stake F1", color: egui::Color32::from_rgb(165, 160, 155) },
-        DriverInfo { number: 27, name: "Nico Hulkenberg", team: "Haas", color: egui::Color32::from_rgb(160, 207, 205) },
-        DriverInfo { number: 31, name: "Esteban Ocon", team: "Alpine", color: egui::Color32::from_rgb(2, 144, 240) },
-        DriverInfo { number: 40, name: "Liam Lawson", team: "AlphaTauri", color: egui::Color32::from_rgb(60, 130, 200) },
-        DriverInfo { number: 44, name: "Lewis Hamilton", team: "Mercedes", color: egui::Color32::from_rgb(0, 210, 190) },
-        DriverInfo { number: 55, name: "Carlos Sainz", team: "Ferrari", color: egui::Color32::from_rgb(220, 0, 0) },
-        DriverInfo { number: 63, name: "George Russell", team: "Mercedes", color: egui::Color32::from_rgb(0, 210, 190) },
-        DriverInfo { number: 77, name: "Valtteri Bottas", team: "Stake F1", color: egui::Color32::from_rgb(165, 160, 155) },
-        DriverInfo { number: 81, name: "Oscar Piastri", team: "McLaren", color: egui::Color32::from_rgb(255, 135, 0) },
+        DriverInfo {
+            number: 1,
+            name: "Max Verstappen",
+            team: "Red Bull",
+            color: egui::Color32::from_rgb(30, 65, 255),
+        },
+        DriverInfo {
+            number: 2,
+            name: "Logan Sargeant",
+            team: "Williams",
+            color: egui::Color32::from_rgb(0, 82, 255),
+        },
+        DriverInfo {
+            number: 4,
+            name: "Lando Norris",
+            team: "McLaren",
+            color: egui::Color32::from_rgb(255, 135, 0),
+        },
+        DriverInfo {
+            number: 10,
+            name: "Pierre Gasly",
+            team: "Alpine",
+            color: egui::Color32::from_rgb(2, 144, 240),
+        },
+        DriverInfo {
+            number: 11,
+            name: "Sergio Perez",
+            team: "Red Bull",
+            color: egui::Color32::from_rgb(30, 65, 255),
+        },
+        DriverInfo {
+            number: 14,
+            name: "Fernando Alonso",
+            team: "Aston Martin",
+            color: egui::Color32::from_rgb(0, 110, 120),
+        },
+        DriverInfo {
+            number: 16,
+            name: "Charles Leclerc",
+            team: "Ferrari",
+            color: egui::Color32::from_rgb(220, 0, 0),
+        },
+        DriverInfo {
+            number: 18,
+            name: "Lance Stroll",
+            team: "Aston Martin",
+            color: egui::Color32::from_rgb(0, 110, 120),
+        },
+        DriverInfo {
+            number: 20,
+            name: "Kevin Magnussen",
+            team: "Haas",
+            color: egui::Color32::from_rgb(160, 207, 205),
+        },
+        DriverInfo {
+            number: 22,
+            name: "Yuki Tsunoda",
+            team: "AlphaTauri",
+            color: egui::Color32::from_rgb(60, 130, 200),
+        },
+        DriverInfo {
+            number: 23,
+            name: "Alex Albon",
+            team: "Williams",
+            color: egui::Color32::from_rgb(0, 82, 255),
+        },
+        DriverInfo {
+            number: 24,
+            name: "Zhou Guanyu",
+            team: "Stake F1",
+            color: egui::Color32::from_rgb(165, 160, 155),
+        },
+        DriverInfo {
+            number: 27,
+            name: "Nico Hulkenberg",
+            team: "Haas",
+            color: egui::Color32::from_rgb(160, 207, 205),
+        },
+        DriverInfo {
+            number: 31,
+            name: "Esteban Ocon",
+            team: "Alpine",
+            color: egui::Color32::from_rgb(2, 144, 240),
+        },
+        DriverInfo {
+            number: 40,
+            name: "Liam Lawson",
+            team: "AlphaTauri",
+            color: egui::Color32::from_rgb(60, 130, 200),
+        },
+        DriverInfo {
+            number: 44,
+            name: "Lewis Hamilton",
+            team: "Mercedes",
+            color: egui::Color32::from_rgb(0, 210, 190),
+        },
+        DriverInfo {
+            number: 55,
+            name: "Carlos Sainz",
+            team: "Ferrari",
+            color: egui::Color32::from_rgb(220, 0, 0),
+        },
+        DriverInfo {
+            number: 63,
+            name: "George Russell",
+            team: "Mercedes",
+            color: egui::Color32::from_rgb(0, 210, 190),
+        },
+        DriverInfo {
+            number: 77,
+            name: "Valtteri Bottas",
+            team: "Stake F1",
+            color: egui::Color32::from_rgb(165, 160, 155),
+        },
+        DriverInfo {
+            number: 81,
+            name: "Oscar Piastri",
+            team: "McLaren",
+            color: egui::Color32::from_rgb(255, 135, 0),
+        },
     ];
 
     let app = PlotApp::new(coordinates, driver_info);
 
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native("F1-LED-CIRCUIT SIMULATION", native_options, Box::new(|_cc| Box::new(app)))?;
+    eframe::run_native(
+        "F1-LED-CIRCUIT SIMULATION",
+        native_options,
+        Box::new(|_cc| Box::new(app)),
+    )?;
 
     Ok(())
 }
