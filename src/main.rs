@@ -155,14 +155,14 @@ impl PlotApp {
         println!("LED states: {:?}", self.led_states);
     }
     
-    async fn visualize_data(app: &mut PlotApp, run_race_data: Vec<RunRace>) {
+    async fn visualize_data(&mut self, run_race_data: Vec<RunRace>) {
         println!("Visualizing data...");
-        app.update_with_data(run_race_data);
+        self.update_with_data(run_race_data);
     
         // Debug print for run_race_data
-        println!("Run race data: {:?}", app.run_race_data);
+        //println!("Run race data: {:?}", self.run_race_data);
     
-        app.update_led_states();
+        self.update_led_states();
     }
 
     fn scale_f64(value: f64, scale: i64) -> i64 {
@@ -174,63 +174,61 @@ impl PlotApp {
         self.run_race_data.sort_by_key(|d| std::cmp::Reverse(d.date));
     }
 
-
-
     async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
         let driver_numbers = vec![
             1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
         ];
-
+    
         let mut handles = Vec::new();
         let max_rows_per_driver = 500;
-
+    
         for driver_number in driver_numbers {
             let url = format!(
                 "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
                 "9149", driver_number
             );
-
+    
             let mut app_clone = self.clone();
             handles.push(tokio::spawn(async move {
                 let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
                 let mut buffer = Vec::new();
-
+    
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk?;
                     println!("Received a chunk of data for driver number {}", driver_number);
                     let run_race_data = process_chunk(chunk, &mut buffer, &app_clone.coordinates, max_rows_per_driver).await?;
-                    visualize_data(&mut app_clone, run_race_data).await;
-
+                    app_clone.visualize_data(run_race_data).await;  // Call visualize_data directly
+    
                     if buffer.len() >= max_rows_per_driver {
                         break;
                     }
                 }
-
+    
                 Ok::<(), Box<dyn StdError + Send + Sync>>(())
             }));
         }
-
+    
         // Await all tasks concurrently using `tokio::join!`
         let results = futures::future::join_all(handles).await;
-
+    
         // Handle any errors
         for result in results {
             if let Err(e) = result {
                 eprintln!("Error fetching data: {:?}", e);
             }
         }
-
+    
         println!("Finished streaming data for all drivers");
         self.data_loaded = true; // Set the flag to true
-
+    
         if let Some(sender) = &self.completion_sender {
             let _ = sender.send(()).await;
         }
-
+    
         Ok(())
     }
-
 }
+
 
 impl App for PlotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
@@ -338,6 +336,7 @@ impl App for PlotApp {
         ctx.request_repaint();
     }
 }
+
 
 fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
     Ok(vec![
@@ -554,14 +553,17 @@ async fn process_chunk(
 
 
 
+/* 
+async fn visualize_data(&mut self, run_race_data: Vec<RunRace>) {
+    println!("Visualizing data...");
+    self.update_with_data(run_race_data);
 
+    // Debug print for run_race_data
+    println!("Run race data: {:?}", self.run_race_data);
 
-
-async fn visualize_data(app: &mut PlotApp, run_race_data: Vec<RunRace>) {
-    app.update_with_data(run_race_data);
-    app.update_led_states();
+    self.update_led_states();
 }
-
+*/
 
 fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
 where
