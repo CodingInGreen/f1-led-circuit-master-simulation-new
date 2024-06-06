@@ -101,68 +101,63 @@ impl PlotApp {
         if self.race_started {
             let elapsed = self.start_time.elapsed().as_secs_f64();
             self.race_time = elapsed * self.speed as f64;
-
+    
             let mut next_index = self.current_index;
             while next_index < self.run_race_data.len() {
                 let run_data = &self.run_race_data[next_index];
-                let race_data_time =
-                    (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
+                let race_data_time = (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
                 if race_data_time <= self.race_time {
                     next_index += 1;
                 } else {
                     break;
                 }
             }
-
-            self.current_index = next_index;
-            self.update_led_states();
+    
+            if next_index != self.current_index {
+                self.current_index = next_index;
+                println!("Current index updated to: {}", self.current_index);
+                let run_race_data_slice = self.run_race_data[..self.current_index].to_vec();
+                self.update_led_states(&run_race_data_slice); // Pass the cloned slice directly
+            }
         }
     }
 
-    fn update_led_states(&mut self) {
+    fn update_led_states(&mut self, run_race_data: &[RunRace]) {
+        println!("Updating LED states for {} entries", run_race_data.len());
         self.led_states.clear();
-        
-        println!("Updating LED states...");
     
-        for run_data in &self.run_race_data[..self.current_index] {
+        for run_data in run_race_data.iter() {
             let coord_key = (
-                Self::scale_f64(run_data.x_led, 1_000_000),
-                Self::scale_f64(run_data.y_led, 1_000_000),
+                PlotApp::scale_f64(run_data.x_led, 1_000_000),
+                PlotApp::scale_f64(run_data.y_led, 1_000_000),
             );
     
             // Update the last known position of the driver
             self.last_positions.insert(run_data.driver_number, coord_key);
+            // Print out the last known positions of the drivers
+            println!("Updated last_positions: {:?}", self.last_positions);
         }
-        
-        // Debug print for last positions
-        println!("Last positions: {:?}", self.last_positions);
-        
-        // Update the LED states for all known positions
+    
+        // Print final state of LED positions
         for (&driver_number, &position) in &self.last_positions {
-            let color = self
-                .driver_info
-                .iter()
+            let color = self.driver_info.iter()
                 .find(|&driver| driver.number == driver_number)
                 .map_or(egui::Color32::WHITE, |driver| driver.color);
-    
-            // Print LED positions and corresponding colors
             println!("LED position: {:?}, Color: {:?}", position, color);
-    
             self.led_states.insert(position, color);
         }
-    
-        // Debug print for LED states
-        println!("LED states: {:?}", self.led_states);
     }
-    
+
     async fn visualize_data(&mut self, run_race_data: Vec<RunRace>) {
         println!("Visualizing data...");
-        self.update_with_data(run_race_data);
+        self.update_with_data(run_race_data.clone());
     
-        // Debug print for run_race_data
-        //println!("Run race data: {:?}", self.run_race_data);
+        // Print out x_led and y_led values for the run_race_data
+        //for data in &self.run_race_data {
+        //    println!("date: {}, driver_number: {}, x_led: {}, y_led: {}", data.date, data.driver_number, data.x_led, data.y_led);
+        //}
     
-        self.update_led_states();
+        self.update_led_states(&run_race_data);
     }
 
     fn scale_f64(value: f64, scale: i64) -> i64 {
@@ -171,7 +166,10 @@ impl PlotApp {
 
     fn update_with_data(&mut self, data: Vec<RunRace>) {
         self.run_race_data.extend(data);
-        self.run_race_data.sort_by_key(|d| std::cmp::Reverse(d.date));
+        self.run_race_data.sort_by_key(|d| d.date);
+
+        // Debug print for sorted run_race_data
+        //println!("Sorted run race data: {:?}", self.run_race_data);
     }
 
     async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
@@ -228,7 +226,6 @@ impl PlotApp {
         Ok(())
     }
 }
-
 
 impl App for PlotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
@@ -336,7 +333,6 @@ impl App for PlotApp {
         ctx.request_repaint();
     }
 }
-
 
 fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
     Ok(vec![
@@ -550,20 +546,6 @@ async fn process_chunk(
 
     Ok(run_race_data)
 }
-
-
-
-/* 
-async fn visualize_data(&mut self, run_race_data: Vec<RunRace>) {
-    println!("Visualizing data...");
-    self.update_with_data(run_race_data);
-
-    // Debug print for run_race_data
-    println!("Run race data: {:?}", self.run_race_data);
-
-    self.update_led_states();
-}
-*/
 
 fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
 where
