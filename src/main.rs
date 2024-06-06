@@ -188,6 +188,7 @@ impl PlotApp {
             );
     
             let mut app_clone = self.clone();
+            let sender_clone = self.completion_sender.clone().unwrap();
             handles.push(tokio::spawn(async move {
                 let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
                 let mut buffer = Vec::new();
@@ -195,7 +196,7 @@ impl PlotApp {
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk?;
                     println!("Received a chunk of data for driver number {}", driver_number);
-                    let run_race_data = process_chunk(chunk, &mut buffer, &app_clone.coordinates, max_rows_per_driver).await?;
+                    let run_race_data = process_chunk(chunk, &mut buffer, &app_clone.coordinates, max_rows_per_driver, &sender_clone).await?;
                     app_clone.visualize_data(run_race_data).await;  // Call visualize_data directly
     
                     if buffer.len() >= max_rows_per_driver {
@@ -219,9 +220,9 @@ impl PlotApp {
         self.data_loaded = true; // Set the flag to true
     
         if let Some(sender) = &self.completion_sender {
-            println!("Sending completion message...");
+            println!("Sending final completion message...");
             let _ = sender.send(()).await;
-            println!("Completion message sent.");
+            println!("Final completion message sent.");
         } else {
             println!("Sender is None.");
         }
@@ -236,14 +237,9 @@ impl App for PlotApp {
 
         // Poll the channel for completion messages
         if let Some(receiver) = self.completion_receiver.as_ref() {
-            match receiver.try_recv() {
-                Ok(()) => {
-                    println!("Received completion message!");
-                    ctx.request_repaint(); // Force repaint after data is loaded
-                }
-                Err(e) => {
-                    println!("No message received yet or error occurred: {:?}", e);
-                }
+            while let Ok(()) = receiver.try_recv() {
+                println!("Received completion message!");
+                ctx.request_repaint(); // Force repaint after data is loaded
             }
         } else {
             println!("Receiver is None.");
@@ -492,7 +488,8 @@ async fn process_chunk(
     chunk: Bytes,
     buffer: &mut Vec<u8>,
     coordinates: &[LedCoordinate],
-    max_rows: usize
+    max_rows: usize,
+    sender: &async_channel::Sender<()>
 ) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
     //println!("Processing a new chunk of data...");
@@ -557,6 +554,9 @@ async fn process_chunk(
         run_race_data.extend(new_run_race_data);
         *buffer = Vec::new(); // Clear the buffer after processing
     }
+
+    // Send completion message after processing the chunk
+    let _ = sender.send(()).await;
 
     Ok(run_race_data)
 }
