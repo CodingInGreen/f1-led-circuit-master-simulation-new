@@ -157,11 +157,6 @@ impl PlotApp {
         (value * scale as f64) as i64
     }
 
-    fn update_with_data(&mut self, data: Vec<RunRace>) {
-        self.run_race_data.extend(data);
-        self.run_race_data.sort_by_key(|d| d.date);
-    }
-
     async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
         println!("Starting to load data...");
         let driver_numbers = vec![
@@ -189,20 +184,21 @@ impl PlotApp {
     
                     while let Some(chunk) = stream.next().await {
                         let chunk = chunk?;
-                        println!(
-                            "Received a chunk of data for driver number {}",
-                            driver_number
-                        );
+                        println!("Received a chunk of data for driver number {}", driver_number);
                         let run_race_data = deserialize_chunk(
                             chunk,
                             &mut buffer,
                             &app_clone.coordinates,
                             usize::MAX, // No limit on rows per driver
                             &sender_clone,
-                        )
-                        .await?;
-                        app_clone.update_with_data(run_race_data.clone()); // Update with the new data
-                        app_clone.start_race(); // Visualize the updated data
+                        ).await?;
+    
+                        // Sort data by date
+                        app_clone.run_race_data.extend(run_race_data);
+                        app_clone.run_race_data.sort_by_key(|d| d.date);
+    
+                        // Visualize the data
+                        app_clone.start_race(); 
     
                         if !buffer.is_empty() {
                             driver_complete = false;
@@ -210,10 +206,7 @@ impl PlotApp {
                     }
     
                     if driver_complete {
-                        println!(
-                            "Completed data fetching for driver number {}",
-                            driver_number
-                        );
+                        println!("Completed data fetching for driver number {}", driver_number);
                     }
     
                     Ok::<(), Box<dyn StdError + Send + Sync>>(())
@@ -250,6 +243,7 @@ impl PlotApp {
     
         Ok(())
     }
+    
     
     async fn check_if_data_complete(driver_number: &u32) -> bool {
         // Implement a mechanism to check if data is complete for the given driver
