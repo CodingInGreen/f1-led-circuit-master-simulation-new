@@ -228,19 +228,13 @@ impl PlotApp {
 
 impl App for PlotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        let ctx_clone = ctx.clone();
-        tokio::spawn(async move {
-            ctx_clone.request_repaint();
-        });
         self.update_race();
 
         if let Some(receiver) = self.completion_receiver.as_ref() {
             while let Ok(()) = receiver.try_recv() {
                 println!("Received completion message!");
-                ctx.request_repaint(); // Force repaint after data is loaded
+                // Force repaint after data is loaded
             }
-        } else {
-            println!("Receiver is None.");
         }
 
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -319,6 +313,7 @@ impl App for PlotApp {
                 let norm_x = ((coord.x_led - min_x) / width) as f32 * (ui.available_width() - 60.0);
                 let norm_y = (ui.available_height() - 60.0) - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0));
 
+
                 painter.rect_filled(
                     egui::Rect::from_min_size(
                         egui::pos2(norm_x + 30.0, norm_y + 30.0),
@@ -330,11 +325,13 @@ impl App for PlotApp {
             }
 
             let led_states = self.led_states.lock().unwrap();
+
+            //println!("EGUI - led_state: {:?}", led_states);
+
             for ((x, y), color) in &*led_states {
                 let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32 * (ui.available_width() - 60.0);
                 let norm_y = (ui.available_height() - 60.0) - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32 * (ui.available_height() - 60.0));
 
-                println!("paint x: {}, paint y: {}", x, y);
                 painter.rect_filled(
                     egui::Rect::from_min_size(
                         egui::pos2(norm_x + 30.0, norm_y + 30.0),
@@ -346,7 +343,7 @@ impl App for PlotApp {
             }
         });
 
-        ctx.request_repaint();
+        ctx.request_repaint(); 
     }
 }
 
