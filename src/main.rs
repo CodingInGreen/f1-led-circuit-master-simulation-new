@@ -58,8 +58,8 @@ struct PlotApp {
     driver_info: Vec<DriverInfo>,
     current_index: usize,
     led_states: Arc<Mutex<HashMap<(i64, i64), egui::Color32>>>, // Tracks the current state of the LEDs
-    last_positions: HashMap<u32, (i64, i64)>,       // Last known positions of each driver
-    speed: i32,                                     // Playback speed multiplier
+    last_positions: HashMap<u32, (i64, i64)>, // Last known positions of each driver
+    speed: i32,                               // Playback speed multiplier
     completion_sender: Option<async_channel::Sender<()>>,
     completion_receiver: Option<async_channel::Receiver<()>>,
 }
@@ -103,7 +103,8 @@ impl PlotApp {
             let mut next_index = self.current_index;
             while next_index < self.run_race_data.len() {
                 let run_data = &self.run_race_data[next_index];
-                let race_data_time = (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
+                let race_data_time =
+                    (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
                 if race_data_time <= self.race_time {
                     next_index += 1;
                 } else {
@@ -130,12 +131,17 @@ impl PlotApp {
                 PlotApp::scale_f64(run_data.y_led, 1_000_000),
             );
 
-            self.last_positions.insert(run_data.driver_number, coord_key);
+            self.last_positions
+                .insert(run_data.driver_number, coord_key);
             println!("Updated last_positions: {:?}", self.last_positions);
         }
 
         for (&driver_number, &position) in &self.last_positions {
-            let color = self.driver_info.iter().find(|&driver| driver.number == driver_number).map_or(egui::Color32::WHITE, |driver| driver.color);
+            let color = self
+                .driver_info
+                .iter()
+                .find(|&driver| driver.number == driver_number)
+                .map_or(egui::Color32::WHITE, |driver| driver.color);
             println!("LED position: {:?}, Color: {:?}", position, color);
             led_states.insert(position, color);
 
@@ -161,59 +167,79 @@ impl PlotApp {
         let driver_numbers = vec![
             1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
         ];
-
-        let mut handles = Vec::new();
-        let max_rows_per_driver = 10;
-
-        for driver_number in driver_numbers {
-            let url = format!(
-                "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
-                "9149", driver_number
-            );
-
-            let mut app_clone = self.clone();
-            let sender_clone = self.completion_sender.clone().unwrap();
-            handles.push(tokio::spawn(async move {
-                let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
-                let mut buffer = Vec::new();
-
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk?;
-                    println!(
-                        "Received a chunk of data for driver number {}",
-                        driver_number
-                    );
-                    let run_race_data = process_chunk(
-                        chunk,
-                        &mut buffer,
-                        &app_clone.coordinates,
-                        max_rows_per_driver,
-                        &sender_clone,
-                    )
-                    .await?;
-                    app_clone.update_with_data(run_race_data.clone()); // Update with the new data
-                    app_clone.update_race(); // Visualize the updated data
-
-                    if buffer.len() >= max_rows_per_driver {
-                        break;
+    
+        let mut all_drivers_complete = false;
+    
+        while !all_drivers_complete {
+            let mut handles = Vec::new();
+            all_drivers_complete = true;  // Reset to true before checking all drivers
+    
+            for &driver_number in &driver_numbers {
+                let url = format!(
+                    "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
+                    "9149", driver_number
+                );
+    
+                let mut app_clone = self.clone();
+                let sender_clone = self.completion_sender.clone().unwrap();
+                handles.push(tokio::spawn(async move {
+                    let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
+                    let mut buffer = Vec::new();
+                    let mut driver_complete = true;
+    
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk?;
+                        println!(
+                            "Received a chunk of data for driver number {}",
+                            driver_number
+                        );
+                        let run_race_data = process_chunk(
+                            chunk,
+                            &mut buffer,
+                            &app_clone.coordinates,
+                            usize::MAX, // No limit on rows per driver
+                            &sender_clone,
+                        )
+                        .await?;
+                        app_clone.update_with_data(run_race_data.clone()); // Update with the new data
+                        app_clone.update_race(); // Visualize the updated data
+    
+                        if !buffer.is_empty() {
+                            driver_complete = false;
+                        }
                     }
+    
+                    if driver_complete {
+                        println!(
+                            "Completed data fetching for driver number {}",
+                            driver_number
+                        );
+                    }
+    
+                    Ok::<(), Box<dyn StdError + Send + Sync>>(())
+                }));
+            }
+    
+            let results = futures::future::join_all(handles).await;
+    
+            for result in results {
+                if let Err(e) = result {
+                    eprintln!("Error fetching data: {:?}", e);
                 }
-
-                Ok::<(), Box<dyn StdError + Send + Sync>>(())
-            }));
-        }
-
-        let results = futures::future::join_all(handles).await;
-
-        for result in results {
-            if let Err(e) = result {
-                eprintln!("Error fetching data: {:?}", e);
+            }
+    
+            // Check if all drivers have completed data fetching
+            for driver_number in &driver_numbers {
+                let data_complete = Self::check_if_data_complete(driver_number).await;
+                if !data_complete {
+                    all_drivers_complete = false;
+                }
             }
         }
-
+    
         println!("Finished streaming data for all drivers");
         self.data_loaded = true; // Set the flag to true
-
+    
         if let Some(sender) = &self.completion_sender {
             println!("Sending final completion message...");
             let _ = sender.send(()).await;
@@ -221,9 +247,19 @@ impl PlotApp {
         } else {
             println!("Sender is None.");
         }
-
+    
         Ok(())
     }
+    
+    async fn check_if_data_complete(driver_number: &u32) -> bool {
+        // Implement a mechanism to check if data is complete for the given driver
+        // This could be an API call, a flag check, or any other logic specific to your application
+        // Return true if data is complete, false otherwise
+        // For now, we simulate this check. Adjust the logic as needed.
+        // Example: Check some condition to determine if fetching is complete
+        false
+    }
+
 }
 
 impl App for PlotApp {
@@ -242,12 +278,18 @@ impl App for PlotApp {
             egui::Id::new("layer"),
         ));
 
-        let (min_x, max_x) = self.coordinates.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
-            (min.min(coord.x_led), max.max(coord.x_led))
-        });
-        let (min_y, max_y) = self.coordinates.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
-            (min.min(coord.y_led), max.max(coord.y_led))
-        });
+        let (min_x, max_x) = self
+            .coordinates
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
+                (min.min(coord.x_led), max.max(coord.x_led))
+            });
+        let (min_y, max_y) = self
+            .coordinates
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
+                (min.min(coord.y_led), max.max(coord.y_led))
+            });
 
         let width = max_x - min_x;
         let height = max_y - min_y;
@@ -292,11 +334,18 @@ impl App for PlotApp {
         egui::SidePanel::right("legend_panel").show(ctx, |ui| {
             ui.vertical(|ui| {
                 let style = ui.style_mut();
-                style.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 8.0;
+                style
+                    .text_styles
+                    .get_mut(&egui::TextStyle::Body)
+                    .unwrap()
+                    .size = 8.0;
 
                 for driver in &self.driver_info {
                     ui.horizontal(|ui| {
-                        ui.label(format!("{}: {} ({})", driver.number, driver.name, driver.team));
+                        ui.label(format!(
+                            "{}: {} ({})",
+                            driver.number, driver.name, driver.team
+                        ));
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(ui.cursor().min, egui::vec2(5.0, 5.0)),
                             0.0,
@@ -311,8 +360,8 @@ impl App for PlotApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             for coord in &self.coordinates {
                 let norm_x = ((coord.x_led - min_x) / width) as f32 * (ui.available_width() - 60.0);
-                let norm_y = (ui.available_height() - 60.0) - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0));
-
+                let norm_y = (ui.available_height() - 60.0)
+                    - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0));
 
                 painter.rect_filled(
                     egui::Rect::from_min_size(
@@ -329,8 +378,11 @@ impl App for PlotApp {
             //println!("EGUI - led_state: {:?}", led_states);
 
             for ((x, y), color) in &*led_states {
-                let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32 * (ui.available_width() - 60.0);
-                let norm_y = (ui.available_height() - 60.0) - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32 * (ui.available_height() - 60.0));
+                let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32
+                    * (ui.available_width() - 60.0);
+                let norm_y = (ui.available_height() - 60.0)
+                    - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32
+                        * (ui.available_height() - 60.0));
 
                 painter.rect_filled(
                     egui::Rect::from_min_size(
@@ -343,7 +395,7 @@ impl App for PlotApp {
             }
         });
 
-        ctx.request_repaint(); 
+        ctx.request_repaint();
     }
 }
 
@@ -742,6 +794,7 @@ fn generate_run_race_data(
 ) -> Vec<RunRace> {
     raw_data
         .iter()
+        .filter(|data| data.x != 0.0 || data.y != 0.0) // Filter out (0, 0) coordinates
         .map(|data| {
             let (nearest_coord, _distance) = coordinates
                 .iter()
@@ -766,6 +819,7 @@ fn generate_run_race_data(
         })
         .collect()
 }
+
 
 async fn fetch_data_in_chunks(
     url: &str,
