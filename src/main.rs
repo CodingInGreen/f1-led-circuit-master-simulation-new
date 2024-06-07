@@ -13,7 +13,7 @@ use std::time::Instant;
 use tokio;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct LocationData {
+struct ApiData {
     x: f64,
     y: f64,
     z: f64,
@@ -95,7 +95,7 @@ impl PlotApp {
         self.last_positions.clear(); // Reset last positions
     }
 
-    fn update_race(&mut self) {
+    fn start_race(&mut self) {
         if self.race_started {
             let elapsed = self.start_time.elapsed().as_secs_f64();
             self.race_time = elapsed * self.speed as f64;
@@ -123,7 +123,7 @@ impl PlotApp {
     fn update_led_states(&mut self, run_race_data: &[RunRace]) {
         println!("Updating LED states for {} entries", run_race_data.len());
         let mut led_states = self.led_states.lock().unwrap();
-        led_states.clear();
+        //led_states.clear();
 
         for run_data in run_race_data.iter() {
             let coord_key = (
@@ -193,7 +193,7 @@ impl PlotApp {
                             "Received a chunk of data for driver number {}",
                             driver_number
                         );
-                        let run_race_data = process_chunk(
+                        let run_race_data = deserialize_chunk(
                             chunk,
                             &mut buffer,
                             &app_clone.coordinates,
@@ -202,7 +202,7 @@ impl PlotApp {
                         )
                         .await?;
                         app_clone.update_with_data(run_race_data.clone()); // Update with the new data
-                        app_clone.update_race(); // Visualize the updated data
+                        app_clone.start_race(); // Visualize the updated data
     
                         if !buffer.is_empty() {
                             driver_complete = false;
@@ -264,7 +264,7 @@ impl PlotApp {
 
 impl App for PlotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        self.update_race();
+        self.start_race();
 
         if let Some(receiver) = self.completion_receiver.as_ref() {
             while let Ok(()) = receiver.try_recv() {
@@ -788,8 +788,8 @@ fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
     ])
 }
 
-fn generate_run_race_data(
-    raw_data: &[LocationData],
+fn generate_nearest_neighbor(
+    raw_data: &[ApiData],
     coordinates: &[LedCoordinate],
 ) -> Vec<RunRace> {
     raw_data
@@ -834,7 +834,7 @@ async fn fetch_data_in_chunks(
     Ok(stream)
 }
 
-async fn process_chunk(
+async fn deserialize_chunk(
     chunk: Bytes,
     buffer: &mut Vec<u8>,
     coordinates: &[LedCoordinate],
@@ -870,9 +870,9 @@ async fn process_chunk(
             json_slice.to_string()
         };
 
-        match serde_json::from_str::<LocationData>(&json_slice) {
+        match serde_json::from_str::<ApiData>(&json_slice) {
             Ok(location_data) => {
-                let new_run_race_data = generate_run_race_data(&[location_data], coordinates);
+                let new_run_race_data = generate_nearest_neighbor(&[location_data], coordinates);
 
                 rows_processed += new_run_race_data.len();
                 run_race_data.extend(new_run_race_data);
@@ -883,7 +883,7 @@ async fn process_chunk(
                 }
             }
             Err(e) => {
-                println!("Failed to deserialize LocationData: {:?}", e);
+                println!("Failed to deserialize ApiData: {:?}", e);
                 break; // Break the loop if we can't deserialize a complete object
             }
         }
@@ -893,8 +893,8 @@ async fn process_chunk(
     *buffer = buffer_str[start_pos..].as_bytes().to_vec();
 
     // Check if the remaining buffer contains a complete JSON object and process it
-    if let Ok(location_data) = serde_json::from_slice::<LocationData>(&buffer) {
-        let new_run_race_data = generate_run_race_data(&[location_data], coordinates);
+    if let Ok(location_data) = serde_json::from_slice::<ApiData>(&buffer) {
+        let new_run_race_data = generate_nearest_neighbor(&[location_data], coordinates);
         run_race_data.extend(new_run_race_data);
         *buffer = Vec::new(); // Clear the buffer after processing
     }
