@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::result::Result;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio;
 
@@ -56,7 +57,7 @@ struct PlotApp {
     data_loaded: bool,
     driver_info: Vec<DriverInfo>,
     current_index: usize,
-    led_states: HashMap<(i64, i64), egui::Color32>, // Tracks the current state of the LEDs
+    led_states: Arc<Mutex<HashMap<(i64, i64), egui::Color32>>>, // Tracks the current state of the LEDs
     last_positions: HashMap<u32, (i64, i64)>,       // Last known positions of each driver
     speed: i32,                                     // Playback speed multiplier
     completion_sender: Option<async_channel::Sender<()>>,
@@ -77,7 +78,7 @@ impl PlotApp {
             data_loaded: false,
             driver_info,
             current_index: 0,
-            led_states: HashMap::new(), // Initialize empty LED state tracking
+            led_states: Arc::new(Mutex::new(HashMap::new())), // Initialize empty LED state tracking
             last_positions: HashMap::new(), // Initialize empty last positions hashmap
             speed: 1,
             completion_sender: Some(completion_sender),
@@ -90,7 +91,7 @@ impl PlotApp {
         self.race_time = 0.0;
         self.race_started = false;
         self.current_index = 0;
-        self.led_states.clear(); // Reset LED states
+        self.led_states.lock().unwrap().clear(); // Reset LED states
         self.last_positions.clear(); // Reset last positions
     }
 
@@ -99,20 +100,10 @@ impl PlotApp {
             let elapsed = self.start_time.elapsed().as_secs_f64();
             self.race_time = elapsed * self.speed as f64;
 
-            //if self.run_race_data.is_empty() {
-            //    println!("run_race_data is empty!");
-            //}
-
-            // Correctly iterate over run_race_data and print x_led and y_led fields
-            //for run_data in &self.run_race_data {
-            //    println!("x_led: {}, y_led: {}", run_data.x_led, run_data.y_led);
-            //}
-
             let mut next_index = self.current_index;
             while next_index < self.run_race_data.len() {
                 let run_data = &self.run_race_data[next_index];
-                let race_data_time =
-                    (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
+                let race_data_time = (run_data.date - self.run_race_data[0].date).num_milliseconds() as f64 / 1000.0;
                 if race_data_time <= self.race_time {
                     next_index += 1;
                 } else {
@@ -130,7 +121,8 @@ impl PlotApp {
 
     fn update_led_states(&mut self, run_race_data: &[RunRace]) {
         println!("Updating LED states for {} entries", run_race_data.len());
-        self.led_states.clear();
+        let mut led_states = self.led_states.lock().unwrap();
+        led_states.clear();
 
         for run_data in run_race_data.iter() {
             let coord_key = (
@@ -138,25 +130,16 @@ impl PlotApp {
                 PlotApp::scale_f64(run_data.y_led, 1_000_000),
             );
 
-            // Update the last known position of the driver
-            self.last_positions
-                .insert(run_data.driver_number, coord_key);
-            // Print out the last known positions of the drivers
+            self.last_positions.insert(run_data.driver_number, coord_key);
             println!("Updated last_positions: {:?}", self.last_positions);
         }
 
-        // Print final state of LED positions
         for (&driver_number, &position) in &self.last_positions {
-            let color = self
-                .driver_info
-                .iter()
-                .find(|&driver| driver.number == driver_number)
-                .map_or(egui::Color32::WHITE, |driver| driver.color);
+            let color = self.driver_info.iter().find(|&driver| driver.number == driver_number).map_or(egui::Color32::WHITE, |driver| driver.color);
             println!("LED position: {:?}, Color: {:?}", position, color);
-            self.led_states.insert(position, color);
+            led_states.insert(position, color);
 
-            // Iterate through led_states to confirm that there is data
-            if self.led_states.is_empty() {
+            if led_states.is_empty() {
                 println!("update_led_states -- LED STATES EMPTY!");
             } else {
                 println!("update_led_states -- LED STATES FULL!");
@@ -251,7 +234,6 @@ impl App for PlotApp {
         });
         self.update_race();
 
-        // Poll the channel for completion messages
         if let Some(receiver) = self.completion_receiver.as_ref() {
             while let Ok(()) = receiver.try_recv() {
                 println!("Received completion message!");
@@ -266,18 +248,12 @@ impl App for PlotApp {
             egui::Id::new("layer"),
         ));
 
-        let (min_x, max_x) = self
-            .coordinates
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
-                (min.min(coord.x_led), max.max(coord.x_led))
-            });
-        let (min_y, max_y) = self
-            .coordinates
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
-                (min.min(coord.y_led), max.max(coord.y_led))
-            });
+        let (min_x, max_x) = self.coordinates.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
+            (min.min(coord.x_led), max.max(coord.x_led))
+        });
+        let (min_y, max_y) = self.coordinates.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), coord| {
+            (min.min(coord.y_led), max.max(coord.y_led))
+        });
 
         let width = max_x - min_x;
         let height = max_y - min_y;
@@ -322,18 +298,11 @@ impl App for PlotApp {
         egui::SidePanel::right("legend_panel").show(ctx, |ui| {
             ui.vertical(|ui| {
                 let style = ui.style_mut();
-                style
-                    .text_styles
-                    .get_mut(&egui::TextStyle::Body)
-                    .unwrap()
-                    .size = 8.0;
+                style.text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 8.0;
 
                 for driver in &self.driver_info {
                     ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "{}: {} ({})",
-                            driver.number, driver.name, driver.team
-                        ));
+                        ui.label(format!("{}: {} ({})", driver.number, driver.name, driver.team));
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(ui.cursor().min, egui::vec2(5.0, 5.0)),
                             0.0,
@@ -348,8 +317,7 @@ impl App for PlotApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             for coord in &self.coordinates {
                 let norm_x = ((coord.x_led - min_x) / width) as f32 * (ui.available_width() - 60.0);
-                let norm_y = (ui.available_height() - 60.0)
-                    - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0));
+                let norm_y = (ui.available_height() - 60.0) - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0));
 
                 painter.rect_filled(
                     egui::Rect::from_min_size(
@@ -361,33 +329,21 @@ impl App for PlotApp {
                 );
             }
 
-           
-            /* 
-                if self.led_states.is_empty() {
-                    println!("egui -- LED STATES EMPTY!");
-                } else {
-                    println!("egui -- LED STATES FULL!");
-                }
-            */
+            let led_states = self.led_states.lock().unwrap();
+            for ((x, y), color) in &*led_states {
+                let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32 * (ui.available_width() - 60.0);
+                let norm_y = (ui.available_height() - 60.0) - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32 * (ui.available_height() - 60.0));
 
-                for ((x, y), color) in &self.led_states {
-                    let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32
-                        * (ui.available_width() - 60.0);
-                    let norm_y = (ui.available_height() - 60.0)
-                        - (((*y as f64 / 1_000_000.0 - min_y) / height) as f32
-                            * (ui.available_height() - 60.0));
-
-                    println!("paint x: {}, paint y: {}", x, y);
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(norm_x + 30.0, norm_y + 30.0),
-                            egui::vec2(20.0, 20.0),
-                        ),
-                        egui::Rounding::same(0.0),
-                        *color,
-                    );
-                }
-            
+                println!("paint x: {}, paint y: {}", x, y);
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(norm_x + 30.0, norm_y + 30.0),
+                        egui::vec2(20.0, 20.0),
+                    ),
+                    egui::Rounding::same(0.0),
+                    *color,
+                );
+            }
         });
 
         ctx.request_repaint();
