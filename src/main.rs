@@ -31,7 +31,7 @@ struct LedCoordinate {
 }
 
 #[derive(Clone, Debug)]
-struct RunRace {
+struct RaceData {
     date: DateTime<Utc>,
     driver_number: u32,
     x_led: f64,
@@ -49,7 +49,7 @@ struct DriverInfo {
 #[derive(Clone, Debug)]
 struct PlotApp {
     coordinates: Vec<LedCoordinate>,
-    run_race_data: Vec<RunRace>,
+    run_race_data: Vec<RaceData>,
     start_time: Instant,
     race_time: f64, // Elapsed race time in seconds
     race_started: bool,
@@ -78,8 +78,8 @@ impl PlotApp {
             data_loaded: false,
             driver_info,
             current_index: 0,
-            led_states: Arc::new(Mutex::new(HashMap::new())), // Initialize empty LED state tracking
-            last_positions: HashMap::new(), // Initialize empty last positions hashmap
+            led_states: Arc::new(Mutex::new(HashMap::new())), 
+            last_positions: HashMap::new(),
             speed: 1,
             completion_sender: Some(completion_sender),
             completion_receiver: Some(completion_receiver),
@@ -91,8 +91,8 @@ impl PlotApp {
         self.race_time = 0.0;
         self.race_started = false;
         self.current_index = 0;
-        self.led_states.lock().unwrap().clear(); // Reset LED states
-        self.last_positions.clear(); // Reset last positions
+        self.led_states.lock().unwrap().clear(); 
+        self.last_positions.clear();
     }
 
     fn start_race(&mut self) {
@@ -120,7 +120,7 @@ impl PlotApp {
         }
     }
 
-    fn update_led_states(&mut self, run_race_data: &[RunRace]) {
+    fn update_led_states(&mut self, run_race_data: &[RaceData]) {
         println!("Updating LED states for {} entries", run_race_data.len());
         let mut led_states = self.led_states.lock().unwrap();
         //led_states.clear();
@@ -157,7 +157,7 @@ impl PlotApp {
         (value * scale as f64) as i64
     }
 
-    async fn load_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
+    async fn fetch_api_data(&mut self) -> Result<(), Box<dyn StdError + Send + Sync>> {
         println!("Starting to load data...");
         let driver_numbers = vec![
             1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
@@ -309,7 +309,7 @@ impl App for PlotApp {
                         let sender = self.completion_sender.clone().unwrap();
                         tokio::spawn(async move {
                             println!("Spawning data loading task...");
-                            app_clone.load_data().await.unwrap();
+                            app_clone.fetch_api_data().await.unwrap();
                             let _ = sender.send(()).await; // Notify completion
                             println!("Data loading task completed.");
                         });
@@ -785,7 +785,7 @@ fn read_coordinates() -> Result<Vec<LedCoordinate>, Box<dyn StdError>> {
 fn generate_nearest_neighbor(
     raw_data: &[ApiData],
     coordinates: &[LedCoordinate],
-) -> Vec<RunRace> {
+) -> Vec<RaceData> {
     raw_data
         .iter()
         .filter(|data| data.x != 0.0 || data.y != 0.0) // Filter out (0, 0) coordinates
@@ -804,7 +804,7 @@ fn generate_nearest_neighbor(
                 })
                 .unwrap();
 
-            RunRace {
+            RaceData {
                 date: data.date,
                 driver_number: data.driver_number,
                 x_led: nearest_coord.x_led,
@@ -834,7 +834,7 @@ async fn deserialize_chunk(
     coordinates: &[LedCoordinate],
     max_rows: usize,
     sender: &async_channel::Sender<()>,
-) -> Result<Vec<RunRace>, Box<dyn StdError + Send + Sync>> {
+) -> Result<Vec<RaceData>, Box<dyn StdError + Send + Sync>> {
     buffer.extend_from_slice(&chunk);
 
     let mut run_race_data = Vec::new();
