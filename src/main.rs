@@ -11,6 +11,7 @@ use std::result::Result;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio;
+use std::mem;
 
 mod led_coords;
 mod driver_info;
@@ -37,8 +38,6 @@ struct RaceData {
     y_led: f64,
 }
 
-
-
 #[derive(Clone, Debug)]
 struct PlotApp {
     coordinates: Vec<LedCoordinate>,
@@ -50,6 +49,7 @@ struct PlotApp {
     data_loaded: bool,
     driver_info: Vec<DriverInfo>,
     current_index: usize,
+    last_visualized_index: usize, // New field to track the last visualized index
     led_states: Arc<Mutex<HashMap<(i64, i64), egui::Color32>>>, // Tracks the current state of the LEDs
     last_positions: HashMap<u32, (i64, i64)>, // Last known positions of each driver
     speed: i32,                               // Playback speed multiplier
@@ -71,7 +71,8 @@ impl PlotApp {
             data_loaded: false,
             driver_info,
             current_index: 0,
-            led_states: Arc::new(Mutex::new(HashMap::new())), 
+            last_visualized_index: 0, // Initialize the new field
+            led_states: Arc::new(Mutex::new(HashMap::new())),
             last_positions: HashMap::new(),
             speed: 1,
             completion_sender: Some(completion_sender),
@@ -84,6 +85,7 @@ impl PlotApp {
         self.race_time = 0.0;
         self.race_started = false;
         self.current_index = 0;
+        self.last_visualized_index = 0;
         self.led_states.lock().unwrap().clear(); 
         self.last_positions.clear();
     }
@@ -109,26 +111,41 @@ impl PlotApp {
                 self.current_index = next_index;
                 let run_race_data_slice = self.run_race_data[..self.current_index].to_vec();
                 self.update_led_states(&run_race_data_slice);
+
+                // Debug statement to log the size of run_race_data
+                let size_in_bytes = mem::size_of_val(&self.run_race_data) +
+                    self.run_race_data.iter().map(|data| mem::size_of_val(data)).sum::<usize>();
+                //println!("Current size of run_race_data: {} bytes", size_in_bytes);
+
+                // Prune data that has been visualized
+                if self.current_index > self.last_visualized_index {
+                    self.run_race_data.drain(0..self.last_visualized_index);
+                    self.current_index -= self.last_visualized_index;
+                    self.last_visualized_index = 0; // Reset for the next iteration
+                } else {
+                    self.last_visualized_index = self.current_index;
+                }
             }
         }
     }
 
     fn update_led_states(&mut self, run_race_data: &[RaceData]) {
-        println!("Updating LED states for {} entries", run_race_data.len());
+        //println!("Updating LED states for {} entries", run_race_data.len());
         let mut led_states = self.led_states.lock().unwrap();
-        //led_states.clear();
-
+    
+        // Clear the current LED states
+        led_states.clear();
+    
         for run_data in run_race_data.iter() {
             let coord_key = (
                 PlotApp::scale_f64(run_data.x_led, 1_000_000),
                 PlotApp::scale_f64(run_data.y_led, 1_000_000),
             );
-
+    
             self.last_positions
                 .insert(run_data.driver_number, coord_key);
-            println!("Updated last_positions: {:?}", self.last_positions);
         }
-
+    
         for (&driver_number, &position) in &self.last_positions {
             let color = self
                 .driver_info
@@ -137,14 +154,9 @@ impl PlotApp {
                 .map_or(egui::Color32::WHITE, |driver| driver.color);
             println!("LED position: {:?}, Color: {:?}", position, color);
             led_states.insert(position, color);
-
-            if led_states.is_empty() {
-                println!("update_led_states -- LED STATES EMPTY!");
-            } else {
-                println!("update_led_states -- LED STATES FULL!");
-            }
         }
     }
+    
 
     fn scale_f64(value: f64, scale: i64) -> i64 {
         (value * scale as f64) as i64
@@ -155,29 +167,28 @@ impl PlotApp {
         let driver_numbers = vec![
             1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
         ];
-    
+
         let mut all_drivers_complete = false;
-    
+
         while !all_drivers_complete {
             let mut handles = Vec::new();
             all_drivers_complete = true;  // Reset to true before checking all drivers
-    
+
             for &driver_number in &driver_numbers {
                 let url = format!(
                     "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
                     "9149", driver_number
                 );
-    
+
                 let mut app_clone = self.clone();
                 let sender_clone = self.completion_sender.clone().unwrap();
                 handles.push(tokio::spawn(async move {
                     let mut stream = fetch_data_in_chunks(&url, 8 * 1048).await?;
                     let mut buffer = Vec::new();
                     let mut driver_complete = true;
-    
+
                     while let Some(chunk) = stream.next().await {
                         let chunk = chunk?;
-                        println!("Received a chunk of data for driver number {}", driver_number);
                         let run_race_data = deserialize_chunk(
                             chunk,
                             &mut buffer,
@@ -185,35 +196,35 @@ impl PlotApp {
                             usize::MAX, // No limit on rows per driver
                             &sender_clone,
                         ).await?;
-    
+
                         // Sort data by date
                         app_clone.run_race_data.extend(run_race_data);
                         app_clone.run_race_data.sort_by_key(|d| d.date);
-    
+
                         // Visualize the data
                         app_clone.start_race(); 
-    
+
                         if !buffer.is_empty() {
                             driver_complete = false;
                         }
                     }
-    
+
                     if driver_complete {
                         println!("Completed data fetching for driver number {}", driver_number);
                     }
-    
+
                     Ok::<(), Box<dyn StdError + Send + Sync>>(())
                 }));
             }
-    
+
             let results = futures::future::join_all(handles).await;
-    
+
             for result in results {
                 if let Err(e) = result {
                     eprintln!("Error fetching data: {:?}", e);
                 }
             }
-    
+
             // Check if all drivers have completed data fetching
             for driver_number in &driver_numbers {
                 let data_complete = Self::check_if_data_complete(driver_number).await;
@@ -222,10 +233,10 @@ impl PlotApp {
                 }
             }
         }
-    
+
         println!("Finished streaming data for all drivers");
         self.data_loaded = true; // Set the flag to true
-    
+
         if let Some(sender) = &self.completion_sender {
             println!("Sending final completion message...");
             let _ = sender.send(()).await;
@@ -233,11 +244,10 @@ impl PlotApp {
         } else {
             println!("Sender is None.");
         }
-    
+
         Ok(())
     }
-    
-    
+
     async fn check_if_data_complete(_driver_number: &u32) -> bool {
         // Implement a mechanism to check if data is complete for the given driver
         // This could be an API call, a flag check, or any other logic specific to your application
@@ -246,7 +256,6 @@ impl PlotApp {
         // Example: Check some condition to determine if fetching is complete
         false
     }
-
 }
 
 impl App for PlotApp {
@@ -255,7 +264,7 @@ impl App for PlotApp {
 
         if let Some(receiver) = self.completion_receiver.as_ref() {
             while let Ok(()) = receiver.try_recv() {
-                println!("Received completion message!");
+                //println!("Received completion message!");
                 // Force repaint after data is loaded
             }
         }
@@ -350,6 +359,7 @@ impl App for PlotApp {
                 let norm_y = (ui.available_height() - 60.0)
                     - (((coord.y_led - min_y) / height) as f32 * (ui.available_height() - 60.0));
 
+                    
                 painter.rect_filled(
                     egui::Rect::from_min_size(
                         egui::pos2(norm_x + 30.0, norm_y + 30.0),
@@ -358,11 +368,10 @@ impl App for PlotApp {
                     egui::Rounding::same(0.0),
                     egui::Color32::BLACK,
                 );
+                
             }
 
             let led_states = self.led_states.lock().unwrap();
-
-            //println!("EGUI - led_state: {:?}", led_states);
 
             for ((x, y), color) in &*led_states {
                 let norm_x = ((*x as f64 / 1_000_000.0 - min_x) / width) as f32
@@ -385,8 +394,6 @@ impl App for PlotApp {
         ctx.request_repaint();
     }
 }
-
-
 
 fn generate_nearest_neighbor(
     raw_data: &[ApiData],
@@ -420,7 +427,6 @@ fn generate_nearest_neighbor(
         .collect()
 }
 
-
 async fn fetch_data_in_chunks(
     url: &str,
     _chunk_size: usize,
@@ -445,6 +451,7 @@ async fn deserialize_chunk(
 
     let mut run_race_data = Vec::new();
     let mut rows_processed = 0;
+    let mut json_objects_count = 0; // Counter for JSON objects
 
     // Convert the buffer to a string for processing
     let buffer_str = String::from_utf8_lossy(&buffer);
@@ -472,6 +479,7 @@ async fn deserialize_chunk(
 
         match serde_json::from_str::<ApiData>(&json_slice) {
             Ok(location_data) => {
+                json_objects_count += 1; // Increment the counter for each successful deserialization
                 let new_run_race_data = generate_nearest_neighbor(&[location_data], coordinates);
 
                 rows_processed += new_run_race_data.len();
@@ -494,6 +502,7 @@ async fn deserialize_chunk(
 
     // Check if the remaining buffer contains a complete JSON object and process it
     if let Ok(location_data) = serde_json::from_slice::<ApiData>(&buffer) {
+        json_objects_count += 1; // Increment the counter for the final object
         let new_run_race_data = generate_nearest_neighbor(&[location_data], coordinates);
         run_race_data.extend(new_run_race_data);
         *buffer = Vec::new(); // Clear the buffer after processing
@@ -501,6 +510,9 @@ async fn deserialize_chunk(
 
     // Send completion message after processing the chunk
     let _ = sender.send(()).await;
+
+    // Print the number of JSON objects processed in this chunk
+    println!("Processed {} JSON objects in this chunk", json_objects_count);
 
     Ok(run_race_data)
 }
