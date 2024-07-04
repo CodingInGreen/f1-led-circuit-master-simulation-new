@@ -404,15 +404,18 @@ async fn fetch_data() -> Result<Vec<LocationData>, Box<dyn StdError>> {
     let driver_numbers = vec![
         1, 2, 4, 10, 11, 14, 16, 18, 20, 22, 23, 24, 27, 31, 40, 44, 55, 63, 77, 81,
     ];
+    let start_time: &str = "2023-08-27T12:58:56.200";
+    let end_time: &str =  "2023-08-27T13:20:54.300";
 
     let client = Client::new();
     let mut all_data: Vec<LocationData> = Vec::new();
 
     for driver_number in driver_numbers {
         let url = format!(
-            "https://api.openf1.org/v1/location?session_key={}&driver_number={}",
-            session_key, driver_number
+            "https://api.openf1.org/v1/location?session_key={}&driver_number={}&date>{}&date<{}",
+            session_key, driver_number, start_time, end_time,
         );
+        eprint!("url: {}", url);
         let resp = client.get(&url).send().await?;
         if resp.status().is_success() {
             let data: Vec<LocationData> = resp.json().await?;
